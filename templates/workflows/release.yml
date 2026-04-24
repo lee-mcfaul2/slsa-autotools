@@ -235,6 +235,13 @@ jobs:
           if command -v xz >/dev/null 2>&1; then
             xz -c --threads=1 "${DISTDIR}.tar" > "artifacts/pass1/${DISTDIR}.tar.xz"
           fi
+          # .tar.bz2 if the project declares dist-bzip2 in automake
+          # options (matches upstream emission for projects like
+          # libsodium that ship .bz2 alongside .gz in their releases).
+          if grep -qE '(^|[[:space:]])dist-bzip2([[:space:]]|\]|$)' configure.ac Makefile.am 2>/dev/null \
+             && command -v bzip2 >/dev/null 2>&1; then
+            bzip2 -c --best < "${DISTDIR}.tar" > "artifacts/pass1/${DISTDIR}.tar.bz2"
+          fi
           rm -f "${DISTDIR}.tar"
           ( cd artifacts/pass1 \
             && gunzip -c "${DISTDIR}.tar.gz" \
@@ -264,6 +271,10 @@ jobs:
           gzip -c --no-name --best "${distdir}.tar" > "artifacts/pass2/${distdir}.tar.gz"
           if command -v xz >/dev/null 2>&1; then
             xz -c --threads=1 "${distdir}.tar" > "artifacts/pass2/${distdir}.tar.xz"
+          fi
+          if grep -qE '(^|[[:space:]])dist-bzip2([[:space:]]|\]|$)' configure.ac Makefile.am 2>/dev/null \
+             && command -v bzip2 >/dev/null 2>&1; then
+            bzip2 -c --best < "${distdir}.tar" > "artifacts/pass2/${distdir}.tar.bz2"
           fi
           rm -f "${distdir}.tar"
           ( cd artifacts/pass2 \
@@ -302,10 +313,12 @@ jobs:
         run: |
           set -eu
           sha256sum artifacts/pass1/* artifacts/pass2/*
-          diff -q "artifacts/pass1/${distdir}.tar.gz" "artifacts/pass2/${distdir}.tar.gz"
-          if [ -f "artifacts/pass1/${distdir}.tar.xz" ]; then
-            diff -q "artifacts/pass1/${distdir}.tar.xz" "artifacts/pass2/${distdir}.tar.xz"
-          fi
+          # Diff every tarball variant the build emitted (gz always,
+          # xz + bz2 conditional on tooling / project options).
+          for f in artifacts/pass1/*; do
+            base=$(basename "$f")
+            diff -q "artifacts/pass1/${base}" "artifacts/pass2/${base}"
+          done
           echo "Reproducibility verified."
 
       - name: Diagnose source tarball differences
