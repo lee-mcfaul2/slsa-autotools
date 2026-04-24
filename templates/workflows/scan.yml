@@ -147,12 +147,18 @@ jobs:
           # mode 100644 in upstream xz (never chmod'd; invoked as
           # `bash windows/build.bash` by maintainers), so detect by
           # existence rather than executability.
+          #
+          # Emit ABSOLUTE paths. The trace step below cd's into the
+          # distdir before invoking; user hooks at .slsa-autotools/
+          # are not in the distdir (make distdir only copies
+          # Makefile.am-declared files) so the command must reference
+          # the original checkout via ${GITHUB_WORKSPACE}.
           if [ -x .slsa-autotools/windows-hook.sh ]; then
-            CMD='./.slsa-autotools/windows-hook.sh'
+            CMD="${GITHUB_WORKSPACE}/.slsa-autotools/windows-hook.sh"
           elif [ -f .slsa-autotools/windows-hook.sh ]; then
-            CMD='bash .slsa-autotools/windows-hook.sh'
+            CMD="bash ${GITHUB_WORKSPACE}/.slsa-autotools/windows-hook.sh"
           elif [ -f windows/build.bash ]; then
-            CMD='bash windows/build.bash'
+            CMD="bash ${GITHUB_WORKSPACE}/windows/build.bash"
           else
             CMD=''
           fi
