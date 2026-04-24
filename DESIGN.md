@@ -148,3 +148,160 @@ enterprise's own infrastructure. Deferring the implementation
 until an adopter needs it — premature parameterisation when no
 one is asking for it yet would add template complexity for
 hypothetical users.
+
+## What the two-pass diff surfaced
+
+Every source and Windows build runs twice in independent build
+trees. The `Verify reproducibility` step byte-compares the
+outputs; any difference fails the job. The following are real
+non-determinism issues the diff caught during development
+against xz — not bugs in our scaffolder, but latent
+non-determinism in standard build tooling that only shows up
+when you compare bytes across runs.
+
+### 1. Modern gzip silently ignores the `GZIP` environment variable
+
+`automake`'s `dist-gzip` recipe compresses via `GZIP=$(GZIP_ENV)
+gzip -c`. For years the documented way to make gzip's output
+reproducible was `export GZIP=-n` (suppress the filename +
+mtime fields in the gzip header). On Ubuntu 24.04, `gzip`
+deprecated reading flags from the `GZIP` env var for security
+reasons and silently ignores it. Setting `GZIP=-n` in the
+workflow's environment, or even inline on the make command, had
+no effect — the header embedded the current wall-clock time,
+and the two passes produced different bytes a few seconds
+apart.
+
+**Fix:** abandon `dist-gzip` entirely. The pipeline now runs
+`make distdir` → builds `.tar` manually with explicit
+`TAR_OPTIONS` → pipes into `gzip -c --no-name --best` where the
+`--no-name` flag is passed as a direct argument rather than via
+the environment. `.tar.xz` is built the same way.
+
+### 2. Silent empty-tarball SLSA attestation
+
+`make -s dist-gzip dist-xz` resolves the shared `distdir`
+prerequisite once, runs `dist-gzip`'s recipe (which tars the
+distdir and then removes it), then runs `dist-xz`'s recipe:
+`tardir=$(distdir) && $(am__tar) | xz -c > file.tar.xz`. By the
+time `dist-xz` fires, the distdir is gone. `tar` prints
+`Cannot stat: No such file or directory`, emits an empty
+archive, and exits 0. Every prior release shipped 108-byte
+empty `.tar.xz` files and 45-byte empty `.tar.gz` files with
+cryptographically valid SLSA attestations — valid attestations
+for no content.
+
+**Fix, two parts:** (a) stop relying on automake's intertwined
+dist-* recipes; build the distdir once, tar it ourselves. (b)
+Add a size-floor liar-detector after the build: if either
+tarball falls below 32 KiB, fail the job. The bit-compare alone
+can't distinguish "two identical empty tarballs" from "two
+identical real tarballs" — the size check does.
+
+### 3. `dist-hook` side effects on a warm source tree
+
+`xz`'s `dist-hook` runs `git log`, `manconv` (groff → .txt), a
+license-check script, and a couple of other normalisation steps
+during `make dist`. On a cold source tree, the hook produced
+deterministic output; invoked a second time against the same
+tree, several of those generated files differed by a line or
+two. The first bit-compare after switching to single-format
+`make dist-xz` passed on identical runs but failed on the
+two-pass verification because pass 1 left state pass 2 was
+affected by.
+
+**Fix:** do each pass in its own out-of-tree build directory
+(`build1/`, `build2/`), both configured from the same source.
+Each pass is a genuinely cold invocation; the dist-hook runs
+once per pass, produces the same output, and the bit-compare
+holds.
+
+### 4. `po4a` / `xgettext` stamps wall-clock time into translation files
+
+The dist-hook runs `xgettext` to refresh `.pot` files and
+`po4a` to regenerate translated man pages. Both write a
+`POT-Creation-Date:` header field set to `strftime`-of-now. The
+header ends up in `po/xz.pot`, every `po/*.po`, every
+`po4a/po/*.po` — dozens of files per distdir, each differing by
+seconds between the two passes.
+
+**Fix:** after `make distdir` completes, `find ... -name '*.pot'
+-o -name '*.po'` and `sed` every `POT-Creation-Date:` line to
+`date -u -d @${SOURCE_DATE_EPOCH}`-derived fixed string. No-op
+for projects without `po/`; unconditional for projects that
+have one.
+
+### 5. `tar` file ordering and mtimes
+
+`tar` walks the filesystem in whatever order the underlying FS
+returns entries, which on ext4 can vary between runs. Mtimes
+are whatever the filesystem has at tar-time — every file in the
+distdir carries the `make distdir` wall-clock timestamp, which
+differs across passes.
+
+**Fix:** `TAR_OPTIONS='--owner=0 --group=0 --numeric-owner
+--mode=u+rw,go+r-w --sort=name --clamp-mtime --mtime=@${SDE}'`.
+`--sort=name` forces deterministic entry order, `--clamp-mtime
+--mtime` pins every mtime to `SOURCE_DATE_EPOCH`. Set
+`LC_COLLATE=C` so `--sort=name` produces the same ordering
+regardless of the runner's locale.
+
+### 6. Multi-threaded xz is non-deterministic
+
+`xz`'s multi-threaded mode splits input into blocks and assigns
+them to worker threads for parallel LZMA encoding. Block
+assignment is scheduling-dependent, so the output bytes differ
+across runs even with identical input.
+
+**Fix:** `xz -c --threads=1`. Single-threaded xz is
+byte-deterministic; the throughput cost is negligible on
+source tarballs.
+
+### 7. PE `IMAGE_FILE_HEADER.TimeDateStamp`
+
+`gcc` / `ld` on the mingw-w64 cross-toolchain default to
+embedding a wall-clock timestamp in every PE output's
+`IMAGE_FILE_HEADER.TimeDateStamp`, plus a GUID in the
+`.build-id` section derived from the build process. Both differ
+across runs.
+
+**Fix:** a PATH-shadowed `${triplet}-gcc` wrapper at
+`/opt/wrappers/` that injects `-Wl,--no-insert-timestamp` and
+`-Wl,--build-id=none` into every compile line. The upstream
+build script (xz's `windows/build.bash`, libsodium's
+`dist-build/msys2-*.sh`, etc.) stays untouched.
+
+### 8. Absolute paths in DWARF debug info
+
+`gcc` bakes the full build-directory path into DWARF debug
+info. The build directory is `${GITHUB_WORKSPACE}/build1/xz-
+5.8.3/` in pass 1 and `${GITHUB_WORKSPACE}/build2/xz-5.8.3/` in
+pass 2 — different strings, different bytes.
+
+**Fix:** the same wrapper passes `-ffile-prefix-map=${DISTDIR_
+TOP}=.` so the absolute distdir path is rewritten to `.` in
+debug info. `DISTDIR_TOP` is exported by the job before the
+build fires.
+
+### 9. `.zip` / `.7z` central directory mtimes
+
+When `windows/build.bash` calls `7z a -tzip` / `7z a -t7z` to
+package the final Windows distribution, the archive's central
+directory records each entry's filesystem mtime. Those mtimes
+are whatever the filesystem has at archive-time — different
+between passes.
+
+**Fix:** a PATH-shadowed `7z` wrapper that clamps every file's
+mtime to `SOURCE_DATE_EPOCH` via `touch` before forwarding the
+`a` / `u` subcommand to the real `7z`.
+
+---
+
+Each of these is the kind of issue a release pipeline without a
+bit-compare step would ship without ever noticing. That's the
+argument for the two-pass diff: not "we trust our build system
+more when it's deterministic" (fine), but "we literally cannot
+ship attestations that mean anything until this many subtle
+timestamp / ordering / locale dependencies are pinned down."
+The diff is cheap; each fix is mechanical once identified. The
+expensive part is knowing they exist.
