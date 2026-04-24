@@ -102,3 +102,49 @@ sigstore doesn't already provide to the same audience. If an
 adopter needs Notary signatures for an enterprise registry
 policy, that pipeline belongs upstream of or alongside
 slsa-autotools, not inside it.
+
+## Enterprise / air-gapped deployments
+
+The default templates pin two external endpoints:
+
+- `snapshot.ubuntu.com` — the apt snapshot mirror that makes
+  package pinning reproducible. Every byte the builder image
+  consumes is served from there.
+- `fulcio.sigstore.dev` / `rekor.sigstore.dev` — the public
+  sigstore services cosign talks to by default.
+
+Most enterprise GitHub setups — GitHub Enterprise Cloud, or GHES
+with internet egress — use the public endpoints as-is. Sigstore
+is open source (Apache 2.0) and GHES issues OIDC tokens the same
+way github.com does, so the workflow identity binding and the
+transparency log story work identically.
+
+Fully air-gapped deployments need internal equivalents:
+
+- An internal mirror of the Ubuntu snapshot (the bigger lift,
+  unrelated to signing).
+- A private sigstore stack — Fulcio, Rekor, TUF root
+  distribution — sitting inside the airgap.
+- The enterprise's own OIDC identity provider (most setups
+  already have one for GHES).
+
+The scaffolder doesn't currently expose these endpoints as
+first-class configuration — they're hardcoded to the public
+defaults. Adding the overrides is a small templating change, not
+an architectural one:
+
+- `scan.yml` needs an input variable for the snapshot URL in
+  place of the hardcoded `snapshot.ubuntu.com` path.
+- `release.yml`'s `cosign sign-blob` steps (and the cosign
+  install steps) need `FULCIO_URL` and `REKOR_URL` passed through
+  the step's `env:` block, plus a TUF root distribution
+  mechanism.
+- `build-container.yml`'s `cosign sign` step needs the same
+  overrides.
+
+All three swaps preserve the cryptographic properties; they just
+relocate the trust domain from the public internet to the
+enterprise's own infrastructure. Deferring the implementation
+until an adopter needs it — premature parameterisation when no
+one is asking for it yet would add template complexity for
+hypothetical users.
