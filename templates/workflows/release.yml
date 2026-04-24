@@ -54,8 +54,13 @@ name: Release
 
 on:
   push:
+    # Accept both prefixed (v1.2.3) and bare-semver (1.2.3) tag
+    # conventions — adopters keep whatever scheme their upstream
+    # already uses. VERSION derivation below strips a leading 'v'
+    # if present, so both shapes produce a clean semver string.
     tags:
       - 'v*'
+      - '[0-9]*'
 
 permissions: {}
 
