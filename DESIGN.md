@@ -62,3 +62,43 @@ pass on a standard runner.
   consumer using Visual Studio still wants the MSVC-built
   artefact; slsa-autotools does not try to replace that, it
   stacks alongside.
+
+## Signing: sigstore only, no Notary interop
+
+slsa-autotools signs every released artefact with sigstore
+(`cosign sign-blob`, plus `actions/attest-build-provenance` for
+SLSA v1 attestation). It does **not** produce Notary v2 /
+Notation signatures, and there are no plans to add a "convert
+sigstore bundle to Notary signature" path.
+
+Two reasons:
+
+1. **Cert custody attack surface.** Notary binds trust to a
+   long-lived X.509 cert held by the signer. That cert becomes a
+   target — lose the key, rotate the key, leak the key, and the
+   whole signing history is in question. Sigstore issues
+   short-lived certs per-sign against an OIDC identity (GitHub
+   Actions, in our case) and the cert expires in minutes. There
+   is no long-lived secret for an attacker to steal, no rotation
+   schedule to get wrong, no off-boarding story when a
+   maintainer leaves.
+
+2. **Transparency is a property of sigstore, not notary.**
+   Every signature sigstore issues lands in Rekor, a public
+   append-only transparency log. Anyone in the world can audit
+   the full history of signatures issued for a given
+   repository / workflow identity without asking the maintainer
+   for anything. Notary signatures live in the registry and
+   leave no independent trail — verifying a signature tells you
+   it's valid, but not whether the signer ever issued a
+   different one at the same version, or whether the cert was
+   used to sign anything else suspicious. Rekor closes that gap
+   by design.
+
+Supporting Notary alongside would mean reintroducing the cert
+custody model we spent effort removing, and would double the
+signing surface without adding any verification property that
+sigstore doesn't already provide to the same audience. If an
+adopter needs Notary signatures for an enterprise registry
+policy, that pipeline belongs upstream of or alongside
+slsa-autotools, not inside it.
