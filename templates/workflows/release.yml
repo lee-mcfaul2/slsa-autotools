@@ -469,12 +469,22 @@ jobs:
           # Same precedence as scan.yml: executable hook > plain hook >
           # windows/build.bash convention. windows/build.bash is not
           # +x in upstream xz and never chmod'd locally.
+          #
+          # Emit ABSOLUTE paths. The build steps below run the command
+          # from inside the distdir (make distdir output), and distdir
+          # only contains files declared in Makefile.am — so a
+          # user-added .slsa-autotools/windows-hook.sh won't be present
+          # under the distdir CWD. Referencing the hook via
+          # ${GITHUB_WORKSPACE}/... resolves against the original
+          # checkout regardless of CWD. Relative invocations inside
+          # the hook (e.g. dist-build/msys2-*.sh) still resolve
+          # against distdir CWD.
           if [ -x .slsa-autotools/windows-hook.sh ]; then
-            echo "cmd=./.slsa-autotools/windows-hook.sh" >> "$GITHUB_OUTPUT"
+            echo "cmd=${GITHUB_WORKSPACE}/.slsa-autotools/windows-hook.sh" >> "$GITHUB_OUTPUT"
           elif [ -f .slsa-autotools/windows-hook.sh ]; then
-            echo "cmd=bash .slsa-autotools/windows-hook.sh" >> "$GITHUB_OUTPUT"
+            echo "cmd=bash ${GITHUB_WORKSPACE}/.slsa-autotools/windows-hook.sh" >> "$GITHUB_OUTPUT"
           elif [ -f windows/build.bash ]; then
-            echo "cmd=bash windows/build.bash" >> "$GITHUB_OUTPUT"
+            echo "cmd=bash ${GITHUB_WORKSPACE}/windows/build.bash" >> "$GITHUB_OUTPUT"
           else
             echo "ERROR: Windows job reached without an entry point; needs.test.outputs.has_windows gate disagrees with detection?"
             exit 1
