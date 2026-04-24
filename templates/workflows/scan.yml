@@ -361,6 +361,18 @@ jobs:
 
           # Strip any architecture suffix (pkg:amd64 -> pkg).
           sed -i 's/:.*$//' /tmp/scan/direct-packages.txt
+
+          # Always-required packages, regardless of what the trace
+          # happened to touch:
+          #   - git: the emitted Dockerfile ends with a
+          #     `git config --global --add safe.directory '*'`
+          #     step, and release.yml's jobs invoke git directly
+          #     (git log, git rebase, etc.). Projects whose make
+          #     dist doesn't invoke git (libsodium) would otherwise
+          #     produce an image without git and fail at image
+          #     build time.
+          echo 'git' >> /tmp/scan/direct-packages.txt
+
           sort -u -o /tmp/scan/direct-packages.txt /tmp/scan/direct-packages.txt
 
           if [ ! -s /tmp/scan/direct-packages.txt ]; then
@@ -368,7 +380,7 @@ jobs:
             exit 1
           fi
 
-          echo "Direct packages (from trace): $(wc -l < /tmp/scan/direct-packages.txt)"
+          echo "Direct packages (from trace + always-required): $(wc -l < /tmp/scan/direct-packages.txt)"
 
           # Expand to the full transitive dependency closure. Our
           # trace only captures files the build actually opens, but
