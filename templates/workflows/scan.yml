@@ -627,6 +627,13 @@ jobs:
         # recursion guard). Only dispatched if the Dockerfile
         # actually changed.
         #
+        # Non-fatal: on first-time adoption the dispatch returns 404
+        # because build-container.yml isn't yet on the default
+        # branch (GitHub's workflow_dispatch requires the workflow
+        # to exist on the default branch). In that case the PR merge
+        # itself will fire build-container via its push trigger on
+        # master, so the dispatch miss is harmless. Log and move on.
+        #
         # Uses curl rather than gh because the scan container's
         # bootstrap toolchain does not include gh (avoiding the
         # extra install keeps the image minimal for the trace).
@@ -636,10 +643,23 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          curl -fsS -X POST \
+          http=$(curl -sS -o /tmp/dispatch.out -w '%{http_code}' -X POST \
             -H 'Accept: application/vnd.github+json' \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H 'X-GitHub-Api-Version: 2022-11-28' \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/build-container.yml/dispatches" \
-            -d "{\"ref\":\"${GITHUB_REF_NAME}\"}"
-          echo "Dispatched build-container.yml on ${GITHUB_REF_NAME}"
+            -d "{\"ref\":\"${GITHUB_REF_NAME}\"}")
+          case "${http}" in
+            204)
+              echo "Dispatched build-container.yml on ${GITHUB_REF_NAME}"
+              ;;
+            404)
+              echo "Dispatch 404 — build-container.yml is likely not yet on the default branch."
+              echo "First-time adoption: the PR merge will fire build-container via push trigger. Continuing."
+              ;;
+            *)
+              echo "Unexpected HTTP ${http} from dispatch:"
+              cat /tmp/dispatch.out || true
+              exit 1
+              ;;
+          esac

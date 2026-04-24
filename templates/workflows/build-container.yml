@@ -78,6 +78,14 @@ jobs:
         id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pipe potentially-attacker-controllable template contexts
+          # through env rather than inlining them into shell — avoids
+          # the "code injection via template expansion" class of
+          # vulnerability (see zizmor template-injection audit).
+          REPO_NAME:  ${{ github.event.repository.name }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPOSITORY: ${{ github.repository }}
+          TAG:        ${{ steps.tag.outputs.tag }}
         run: |
           set -eu
           # Query the GitHub packages API (not the registry directly).
@@ -89,13 +97,13 @@ jobs:
           # slsa-autotools init-container script. Users and orgs use
           # different API paths; we pin one at gen time rather than
           # branching at runtime.
-          PKG_NAME=$(echo "${{ github.event.repository.name }}%2Fbuilder")
+          PKG_NAME="${REPO_NAME}%2Fbuilder"
           if gh api \
-               "/{{OWNER_TYPE_PATH}}/${{ github.repository_owner }}/packages/container/${PKG_NAME}/versions" \
+               "/{{OWNER_TYPE_PATH}}/${REPO_OWNER}/packages/container/${PKG_NAME}/versions" \
                --jq '.[].metadata.container.tags[]?' 2>/dev/null \
-             | grep -qx "${{ steps.tag.outputs.tag }}"; then
+             | grep -qx "${TAG}"; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Image ghcr.io/${{ github.repository }}/builder:${{ steps.tag.outputs.tag }} already published — skipping build."
+            echo "Image ghcr.io/${REPOSITORY}/builder:${TAG} already published — skipping build."
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
             echo "Image not present in GHCR — will build and push."
