@@ -10,14 +10,32 @@
 # artifacts locally, signs each with their GPG key, uploads the
 # resulting .asc files, and flips the draft to published.
 #
-# Three jobs, connected by needs:
-#   1. test     — run the project's test suite; release is blocked
-#                 if tests fail.
-#   2. build    — two-pass reproducible tarball build inside the
-#                 pinned builder image, SLSA attestation, cosign
-#                 signing. Emits artifacts for the publish job.
-#   3. publish  — download artifacts, compose release notes,
-#                 create the draft release.
+# Job graph:
+#
+#   test
+#     ├─ build_source_pass1   ─┐
+#     ├─ build_source_pass2   ─┤  → verify_source   ─┐
+#     ├─ build_windows_pass1  ─┐                     ├─→ publish
+#     └─ build_windows_pass2  ─┘  → verify_windows  ─┘
+#
+#   1. test          — run the project's test suite; release is
+#                      blocked if tests fail.
+#   2. build_*_pass{1,2} — each pass runs in its own container at
+#                      an identical absolute pwd. Anything that
+#                      bakes the build path into output (libtool
+#                      .la, pkgconfig .pc, debug info) bakes the
+#                      same path in both passes by construction,
+#                      so the bit-compare in the verify job holds
+#                      without per-target DESTDIR workarounds.
+#                      Pass jobs are read-only — no signing.
+#   3. verify_*      — download both passes, file-set match,
+#                      bit-compare every artifact, then SLSA
+#                      attest + cosign sign pass1's bytes (same
+#                      bytes as pass2 by definition). build_windows
+#                      and verify_windows are skipped on projects
+#                      with no Windows entry point.
+#   4. publish       — download verified artifacts, regenerate
+#                      SHA256SUMS, create the draft release.
 #
 # Why draft + manual GPG?  In the traditional autotools release
 # flow, the maintainer builds and signs on the same laptop — one
@@ -93,7 +111,7 @@ jobs:
 
       - name: Detect Windows build entry point
         # Same precedence as scan.yml. Result is emitted as a job
-        # output the build_windows job reads via needs.test.outputs.
+        # output the build_windows_pass{1,2} jobs read via needs.test.outputs.
         id: windows
         run: |
           set -eu
@@ -139,8 +157,16 @@ jobs:
             make -s check
           fi
 
-  build_source:
-    name: Build source tarball, attest, sign
+  # Source build is split into two parallel pass jobs that each run
+  # in their own container. Both passes use an identical absolute
+  # pwd (${GITHUB_WORKSPACE}/build/${DISTDIR}) by construction, so
+  # anything that bakes the build path into output (libtool .la,
+  # pkgconfig .pc, generated headers) bakes the same path in both
+  # passes. The bit-compare in verify_source then holds without per-
+  # target DESTDIR workarounds. See DESIGN.md "Pending refactor:
+  # per-pass container isolation" for the full rationale.
+  build_source_pass1:
+    name: Build source tarball (pass 1)
     needs: test
     runs-on: ubuntu-24.04
     container:
@@ -148,13 +174,9 @@ jobs:
     defaults:
       run:
         shell: bash
-    timeout-minutes: 45
+    timeout-minutes: 30
     permissions:
       contents: read
-      # Publish the SLSA attestation (out-of-band from artifacts).
-      attestations: write
-      # Mint the short-lived OIDC token for keyless sigstore signing.
-      id-token: write
 
     steps:
       - name: Mark workspace safe for git (pre-checkout)
@@ -197,14 +219,14 @@ jobs:
           fi
           [ -x ./configure ] || { echo "ERROR: no ./configure after bootstrap"; exit 1; }
 
-      - name: Build source tarball (first pass)
+      - name: Build source tarball
         env:
           TAR_OPTIONS: '--owner=0 --group=0 --numeric-owner --mode=u+rw,go+r-w --sort=name --clamp-mtime --mtime=@${{ steps.meta.outputs.sde }}'
           LC_COLLATE: 'C'
         run: |
           set -euo pipefail
-          mkdir build1
-          cd build1
+          mkdir build
+          cd build
           ../configure --quiet
           make -s distdir
           # Find the distdir by reading PACKAGE and VERSION from
@@ -217,7 +239,6 @@ jobs:
           DISTDIR="${PACKAGE}-${VERSION}"
           [ -n "${PACKAGE}" ] && [ -n "${VERSION}" ] && [ -d "${DISTDIR}" ] \
             || { echo "ERROR: could not locate distdir (PACKAGE=${PACKAGE:-unset} VERSION=${VERSION:-unset})"; ls -la; exit 1; }
-          echo "distdir=${DISTDIR}" >> "$GITHUB_ENV"
           # POT-Creation-Date normalization. xgettext stamps
           # wall-clock time into this field; po4a propagates the
           # stamp into every translation file. Harmless no-op if
@@ -225,99 +246,219 @@ jobs:
           FIXED_DATE=$(date -u -d "@${SOURCE_DATE_EPOCH}" "+%Y-%m-%d %H:%M+0000")
           find "${DISTDIR}" -type f \( -name '*.pot' -o -name '*.po' \) \
             -exec sed -i "s|^\"POT-Creation-Date: .*|\"POT-Creation-Date: ${FIXED_DATE}\\\\n\"|" {} + 2>/dev/null || true
-          # Snapshot expected manifest for the liar-detector step.
+          # Snapshot expected manifest for the per-pass liar-detector.
           ( cd "${DISTDIR}" && find . -mindepth 1 | sed 's,^\./,,' ) \
-              | LC_ALL=C sort > ../pass1.expected.txt
-          tar --format=ustar -cf "../${DISTDIR}.tar" "${DISTDIR}"
-          mkdir -p ../artifacts/pass1
-          cd ..
-          gzip -c --no-name --best "${DISTDIR}.tar" > "artifacts/pass1/${DISTDIR}.tar.gz"
+              | LC_ALL=C sort > expected.txt
+          tar --format=ustar -cf "${DISTDIR}.tar" "${DISTDIR}"
+          mkdir -p ../dist
+          gzip -c --no-name --best "${DISTDIR}.tar" > "../dist/${DISTDIR}.tar.gz"
           if command -v xz >/dev/null 2>&1; then
-            xz -c --threads=1 "${DISTDIR}.tar" > "artifacts/pass1/${DISTDIR}.tar.xz"
+            xz -c --threads=1 "${DISTDIR}.tar" > "../dist/${DISTDIR}.tar.xz"
           fi
           # .tar.bz2 if the project declares dist-bzip2 in automake
           # options (matches upstream emission for projects like
           # libsodium that ship .bz2 alongside .gz in their releases).
           if grep -qE '(^|[[:space:]])dist-bzip2([[:space:]]|\]|$)' configure.ac Makefile.am 2>/dev/null \
              && command -v bzip2 >/dev/null 2>&1; then
-            bzip2 -c --best < "${DISTDIR}.tar" > "artifacts/pass1/${DISTDIR}.tar.bz2"
+            bzip2 -c --best < "${DISTDIR}.tar" > "../dist/${DISTDIR}.tar.bz2"
           fi
           rm -f "${DISTDIR}.tar"
-          ( cd artifacts/pass1 \
+          ( cd ../dist \
             && gunzip -c "${DISTDIR}.tar.gz" \
              | tar -tf - \
              | sed "s,^${DISTDIR}/,,;s,/$,," \
              | grep -v '^$' \
-             | LC_ALL=C sort ) > pass1.actual.txt
+             | LC_ALL=C sort ) > actual.txt
+          # Per-pass liar-detector: size floor + manifest match. Each
+          # pass validates itself before upload; verify_source then
+          # only has to do the cross-pass bit-compare.
+          MIN_SIZE=32768    # 32 KiB. Deliberately low; many real
+                            # autotools projects produce small
+                            # tarballs at 0.x versions. Maintainers
+                            # can tune this by hand-editing.
+          TB="../dist/${DISTDIR}.tar.gz"
+          SIZE=$(wc -c < "${TB}")
+          if [ "${SIZE}" -lt "${MIN_SIZE}" ]; then
+            echo "FAIL: tarball suspiciously small: ${SIZE} < ${MIN_SIZE}"
+            exit 1
+          fi
+          if ! diff -u expected.txt actual.txt > /tmp/manifest.diff; then
+            echo "FAIL: tarball manifest does not match distdir declaration:"
+            cat /tmp/manifest.diff
+            exit 1
+          fi
+          echo "OK: ${SIZE} bytes, $(wc -l < actual.txt) entries, manifest matches"
 
-      - name: Build source tarball (second pass, independent)
+      - name: Upload pass 1 tarballs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: source-pass1
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  build_source_pass2:
+    # Byte-identical mirror of build_source_pass1. The two jobs run
+    # in parallel on independent runners with the same container
+    # image; identical absolute pwd between passes is what makes the
+    # bit-compare in verify_source robust against absolute-path
+    # leakage. If you change anything in the body here, change it in
+    # build_source_pass1 too.
+    name: Build source tarball (pass 2)
+    needs: test
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/${{ github.repository }}/builder@sha256:{{BUILDER_DIGEST}}
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Mark workspace safe for git (pre-checkout)
+        shell: sh
+        run: git config --global --add safe.directory '*'
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Derive version and SOURCE_DATE_EPOCH
+        id: meta
+        run: |
+          set -eu
+          VERSION="${GITHUB_REF_NAME#v}"
+          SDE=$(git log -1 --format=%ct "${GITHUB_REF_NAME}")
+          {
+            echo "version=${VERSION}"
+            echo "sde=${SDE}"
+          } >> "$GITHUB_OUTPUT"
+          echo "SOURCE_DATE_EPOCH=${SDE}" >> "$GITHUB_ENV"
+          echo "Version: ${VERSION}"
+          echo "SDE:     ${SDE}"
+
+      - name: Bootstrap autotools
+        run: |
+          set -euo pipefail
+          if [ -x .slsa-autotools/build-hook.sh ]; then
+            ./.slsa-autotools/build-hook.sh
+          else
+            if   [ -x autogen.sh ]; then ./autogen.sh || true
+            elif [ -x bootstrap ]; then  ./bootstrap  || true
+            fi
+            if [ ! -x ./configure ] && { [ -f configure.ac ] || [ -f configure.in ]; }; then
+              autoreconf -fi
+            fi
+          fi
+          [ -x ./configure ] || { echo "ERROR: no ./configure after bootstrap"; exit 1; }
+
+      - name: Build source tarball
         env:
           TAR_OPTIONS: '--owner=0 --group=0 --numeric-owner --mode=u+rw,go+r-w --sort=name --clamp-mtime --mtime=@${{ steps.meta.outputs.sde }}'
           LC_COLLATE: 'C'
         run: |
           set -euo pipefail
-          mkdir build2
-          cd build2
+          mkdir build
+          cd build
           ../configure --quiet
           make -s distdir
+          PACKAGE=$(awk -F' *= *' '$1 == "PACKAGE" {print $2; exit}' Makefile)
+          VERSION=$(awk -F' *= *' '$1 == "VERSION" {print $2; exit}' Makefile)
+          DISTDIR="${PACKAGE}-${VERSION}"
+          [ -n "${PACKAGE}" ] && [ -n "${VERSION}" ] && [ -d "${DISTDIR}" ] \
+            || { echo "ERROR: could not locate distdir (PACKAGE=${PACKAGE:-unset} VERSION=${VERSION:-unset})"; ls -la; exit 1; }
           FIXED_DATE=$(date -u -d "@${SOURCE_DATE_EPOCH}" "+%Y-%m-%d %H:%M+0000")
-          find "${distdir}" -type f \( -name '*.pot' -o -name '*.po' \) \
+          find "${DISTDIR}" -type f \( -name '*.pot' -o -name '*.po' \) \
             -exec sed -i "s|^\"POT-Creation-Date: .*|\"POT-Creation-Date: ${FIXED_DATE}\\\\n\"|" {} + 2>/dev/null || true
-          ( cd "${distdir}" && find . -mindepth 1 | sed 's,^\./,,' ) \
-              | LC_ALL=C sort > ../pass2.expected.txt
-          tar --format=ustar -cf "../${distdir}.tar" "${distdir}"
-          mkdir -p ../artifacts/pass2
-          cd ..
-          gzip -c --no-name --best "${distdir}.tar" > "artifacts/pass2/${distdir}.tar.gz"
+          ( cd "${DISTDIR}" && find . -mindepth 1 | sed 's,^\./,,' ) \
+              | LC_ALL=C sort > expected.txt
+          tar --format=ustar -cf "${DISTDIR}.tar" "${DISTDIR}"
+          mkdir -p ../dist
+          gzip -c --no-name --best "${DISTDIR}.tar" > "../dist/${DISTDIR}.tar.gz"
           if command -v xz >/dev/null 2>&1; then
-            xz -c --threads=1 "${distdir}.tar" > "artifacts/pass2/${distdir}.tar.xz"
+            xz -c --threads=1 "${DISTDIR}.tar" > "../dist/${DISTDIR}.tar.xz"
           fi
           if grep -qE '(^|[[:space:]])dist-bzip2([[:space:]]|\]|$)' configure.ac Makefile.am 2>/dev/null \
              && command -v bzip2 >/dev/null 2>&1; then
-            bzip2 -c --best < "${distdir}.tar" > "artifacts/pass2/${distdir}.tar.bz2"
+            bzip2 -c --best < "${DISTDIR}.tar" > "../dist/${DISTDIR}.tar.bz2"
           fi
-          rm -f "${distdir}.tar"
-          ( cd artifacts/pass2 \
-            && gunzip -c "${distdir}.tar.gz" \
+          rm -f "${DISTDIR}.tar"
+          ( cd ../dist \
+            && gunzip -c "${DISTDIR}.tar.gz" \
              | tar -tf - \
-             | sed "s,^${distdir}/,,;s,/$,," \
+             | sed "s,^${DISTDIR}/,,;s,/$,," \
              | grep -v '^$' \
-             | LC_ALL=C sort ) > pass2.actual.txt
+             | LC_ALL=C sort ) > actual.txt
+          MIN_SIZE=32768
+          TB="../dist/${DISTDIR}.tar.gz"
+          SIZE=$(wc -c < "${TB}")
+          if [ "${SIZE}" -lt "${MIN_SIZE}" ]; then
+            echo "FAIL: tarball suspiciously small: ${SIZE} < ${MIN_SIZE}"
+            exit 1
+          fi
+          if ! diff -u expected.txt actual.txt > /tmp/manifest.diff; then
+            echo "FAIL: tarball manifest does not match distdir declaration:"
+            cat /tmp/manifest.diff
+            exit 1
+          fi
+          echo "OK: ${SIZE} bytes, $(wc -l < actual.txt) entries, manifest matches"
 
-      - name: Liar-detector (size floor and manifest match)
-        # Exit 0 from the build steps is not a statement of
-        # correctness. Catches empty-tarball / tar-pipeline-failure
-        # class of bugs.
-        run: |
-          set -euo pipefail
-          MIN_SIZE=32768    # 32 KiB. Deliberately low; many real
-                            # autotools projects produce small
-                            # tarballs at 0.x versions. Maintainers
-                            # can tune this by hand-editing.
-          for pass in pass1 pass2; do
-            TB="artifacts/${pass}/${distdir}.tar.gz"
-            SIZE=$(wc -c < "${TB}")
-            if [ "${SIZE}" -lt "${MIN_SIZE}" ]; then
-              echo "FAIL: ${pass} tarball suspiciously small: ${SIZE} < ${MIN_SIZE}"
-              exit 1
-            fi
-            if ! diff -u "${pass}.expected.txt" "${pass}.actual.txt" > /tmp/manifest.diff; then
-              echo "FAIL: ${pass} tarball manifest does not match distdir declaration:"
-              cat /tmp/manifest.diff
-              exit 1
-            fi
-            echo "OK: ${pass} ${SIZE} bytes, $(wc -l < ${pass}.actual.txt) entries, manifest matches"
-          done
+      - name: Upload pass 2 tarballs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: source-pass2
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  verify_source:
+    name: Verify source reproducibility, attest, sign
+    needs: [build_source_pass1, build_source_pass2]
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/${{ github.repository }}/builder@sha256:{{BUILDER_DIGEST}}
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # Publish the SLSA attestation (out-of-band from artifacts).
+      attestations: write
+      # Mint the short-lived OIDC token for keyless sigstore signing.
+      id-token: write
+
+    steps:
+      - name: Download pass 1 tarballs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: source-pass1
+          path: pass1
+
+      - name: Download pass 2 tarballs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: source-pass2
+          path: pass2
 
       - name: Verify reproducibility
         run: |
           set -eu
-          sha256sum artifacts/pass1/* artifacts/pass2/*
-          # Diff every tarball variant the build emitted (gz always,
-          # xz + bz2 conditional on tooling / project options).
-          for f in artifacts/pass1/*; do
+          # File-set check first — bit-compare loops over pass1, so
+          # an extra/missing file in pass2 would otherwise slip past.
+          (cd pass1 && ls -1 | LC_ALL=C sort) > pass1.list
+          (cd pass2 && ls -1 | LC_ALL=C sort) > pass2.list
+          if ! diff -u pass1.list pass2.list; then
+            echo "FAIL: pass1 and pass2 emitted different file sets"
+            exit 1
+          fi
+          sha256sum pass1/* pass2/*
+          for f in pass1/*; do
             base=$(basename "$f")
-            diff -q "artifacts/pass1/${base}" "artifacts/pass2/${base}"
+            diff -q "pass1/${base}" "pass2/${base}"
           done
           echo "Reproducibility verified."
 
@@ -327,34 +468,38 @@ jobs:
           set -u
           mkdir -p diag
           echo "=== sha256 ==="
-          sha256sum artifacts/pass1/* artifacts/pass2/* || true
+          sha256sum pass1/* pass2/* || true
           echo
-          echo "=== inner .tar sha256 ==="
-          gunzip -c "artifacts/pass1/${distdir}.tar.gz" > diag/pass1.tar || true
-          gunzip -c "artifacts/pass2/${distdir}.tar.gz" > diag/pass2.tar || true
-          sha256sum diag/pass1.tar diag/pass2.tar || true
-          echo
-          echo "=== first differing byte ==="
-          cmp diag/pass1.tar diag/pass2.tar || true
-          echo
-          echo "=== tar listing diff ==="
-          tar tvf diag/pass1.tar > diag/p1.list || true
-          tar tvf diag/pass2.tar > diag/p2.list || true
-          diff -u diag/p1.list diag/p2.list | head -200 || true
+          for f in pass1/*.tar.gz; do
+            base=$(basename "$f")
+            stem="${base%.tar.gz}"
+            echo "=== ${stem} inner .tar sha256 ==="
+            gunzip -c "pass1/${base}" > "diag/${stem}.pass1.tar" || true
+            gunzip -c "pass2/${base}" > "diag/${stem}.pass2.tar" || true
+            sha256sum "diag/${stem}.pass1.tar" "diag/${stem}.pass2.tar" || true
+            echo "=== first differing byte ==="
+            cmp "diag/${stem}.pass1.tar" "diag/${stem}.pass2.tar" || true
+            echo "=== tar listing diff ==="
+            tar tvf "diag/${stem}.pass1.tar" > "diag/${stem}.p1.list" || true
+            tar tvf "diag/${stem}.pass2.tar" > "diag/${stem}.p2.list" || true
+            diff -u "diag/${stem}.p1.list" "diag/${stem}.p2.list" | head -200 || true
+          done
 
       - name: Assemble release artifacts
+        # Sign pass1's bytes — they're identical to pass2's per the
+        # bit-compare above, so the choice is arbitrary.
         run: |
           set -eu
           mkdir -p release
-          cp "artifacts/pass1/${distdir}".tar.* release/
+          cp pass1/*.tar.* release/
           cd release
-          sha256sum "${distdir}".tar.* > SHA256SUMS
+          sha256sum *.tar.* > SHA256SUMS
           cat SHA256SUMS
 
       - name: SLSA build provenance
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
-          subject-path: release/${{ env.distdir }}.tar.*
+          subject-path: release/*.tar.*
 
       - name: Install cosign
         # Neither cosign nor curl is in the scan-derived builder
@@ -384,7 +529,7 @@ jobs:
           COSIGN_YES: 'true'
         run: |
           set -euo pipefail
-          for f in "release/${distdir}".tar.*; do
+          for f in release/*.tar.*; do
             [ -f "${f}" ] || continue
             case "${f}" in *.sigstore) continue ;; esac
             cosign sign-blob --bundle "${f}.sigstore" --new-bundle-format "${f}"
@@ -399,18 +544,28 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  build_windows:
-    # Runtime-gated via a job output from `test` rather than
-    # hashFiles() — hashFiles is only valid in step-level if:, not
-    # job-level. Detection happens once in the test job's
-    # "Detect Windows build entry point" step and propagates here.
-    # Detection precedence (same as scan.yml):
-    #   - .slsa-autotools/windows-hook.sh   (hook, takes precedence)
-    #   - windows/build.bash                (xz convention)
-    # Consequence for repos without a Windows path: build_windows
-    # shows as "Skipped" in the UI. Cosmetic; publish is gated so a
-    # skip doesn't block the release.
-    name: Build Windows binaries, verify, sign
+  # Windows path is split symmetrically with the source path: two
+  # parallel pass jobs in their own containers, then verify_windows
+  # does the bit-compare + attest + sign. Identical pwd between
+  # passes is what makes the bit-compare hold here — libsodium's
+  # windows hook configures with --prefix="$(pwd)/libsodium-win64",
+  # which used to bake a different absolute path into libsodium.pc
+  # in each sibling build dir; with both passes at the same pwd
+  # inside their own container the leak resolves to the same
+  # bytes by construction.
+  #
+  # Runtime-gated via a job output from `test` rather than
+  # hashFiles() — hashFiles is only valid in step-level if:, not
+  # job-level. Detection happens once in the test job's
+  # "Detect Windows build entry point" step and propagates here.
+  # Detection precedence (same as scan.yml):
+  #   - .slsa-autotools/windows-hook.sh   (hook, takes precedence)
+  #   - windows/build.bash                (xz convention)
+  # Consequence for repos without a Windows path: build_windows_*
+  # show as "Skipped" in the UI. Cosmetic; publish is gated so a
+  # skip doesn't block the release.
+  build_windows_pass1:
+    name: Build Windows binaries (pass 1)
     needs: test
     if: needs.test.outputs.has_windows == 'true'
     runs-on: ubuntu-24.04
@@ -419,11 +574,9 @@ jobs:
     defaults:
       run:
         shell: bash
-    timeout-minutes: 60
+    timeout-minutes: 45
     permissions:
       contents: read
-      attestations: write
-      id-token: write
 
     steps:
       - name: Mark workspace safe for git (pre-checkout)
@@ -528,15 +681,15 @@ jobs:
           chmod +x /opt/wrappers/7z
           echo "PATH=/opt/wrappers:${PATH}" >> "$GITHUB_ENV"
 
-      - name: Build Windows binaries (first pass)
+      - name: Build Windows binaries
         env:
           TAR_OPTIONS: '--owner=0 --group=0 --numeric-owner --mode=u+rw,go+r-w --sort=name --clamp-mtime --mtime=@${{ steps.meta.outputs.sde }}'
           LC_COLLATE: 'C'
         run: |
           set -euo pipefail
           WINDOWS_CMD='${{ steps.windows.outputs.cmd }}'
-          mkdir build1
-          cd build1
+          mkdir build
+          cd build
           ../configure --quiet
           make -s distdir
           PACKAGE=$(awk -F' *= *' '$1 == "PACKAGE" {print $2; exit}' Makefile)
@@ -544,7 +697,6 @@ jobs:
           DISTDIR="${PACKAGE}-${VERSION}"
           [ -n "${PACKAGE}" ] && [ -n "${VERSION}" ] && [ -d "${DISTDIR}" ] \
             || { echo "ERROR: could not locate distdir (PACKAGE=${PACKAGE:-unset} VERSION=${VERSION:-unset})"; ls -la; exit 1; }
-          echo "distdir=${DISTDIR}" >> "$GITHUB_ENV"
           FIXED_DATE=$(date -u -d "@${SOURCE_DATE_EPOCH}" "+%Y-%m-%d %H:%M+0000")
           find "${DISTDIR}" -type f \( -name '*.pot' -o -name '*.po' \) \
             -exec sed -i "s|^\"POT-Creation-Date: .*|\"POT-Creation-Date: ${FIXED_DATE}\\\\n\"|" {} + 2>/dev/null || true
@@ -558,11 +710,11 @@ jobs:
           # Projects with different naming conventions can supply a
           # .slsa-autotools/windows-hook.sh that renames outputs into
           # this shape.
-          mkdir -p ../../artifacts/win-pass1
+          mkdir -p "${GITHUB_WORKSPACE}/win-dist"
           shopt -s nullglob
           copied=0
           for f in *-windows.zip *-windows.7z *-windows.tar.gz *-windows.tar.xz; do
-            cp "$f" ../../artifacts/win-pass1/
+            cp "$f" "${GITHUB_WORKSPACE}/win-dist/"
             copied=$((copied+1))
           done
           if [ "${copied}" -eq 0 ]; then
@@ -571,34 +723,190 @@ jobs:
             exit 1
           fi
 
-      - name: Build Windows binaries (second pass, independent)
+      - name: Upload pass 1 Windows binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-pass1
+          path: win-dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  build_windows_pass2:
+    # Byte-identical mirror of build_windows_pass1. See note on
+    # build_source_pass2 — change in pairs.
+    name: Build Windows binaries (pass 2)
+    needs: test
+    if: needs.test.outputs.has_windows == 'true'
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/${{ github.repository }}/builder@sha256:{{BUILDER_DIGEST}}
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 45
+    permissions:
+      contents: read
+
+    steps:
+      - name: Mark workspace safe for git (pre-checkout)
+        shell: sh
+        run: git config --global --add safe.directory '*'
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Derive version and SOURCE_DATE_EPOCH
+        id: meta
+        run: |
+          set -eu
+          VERSION="${GITHUB_REF_NAME#v}"
+          SDE=$(git log -1 --format=%ct "${GITHUB_REF_NAME}")
+          {
+            echo "version=${VERSION}"
+            echo "sde=${SDE}"
+          } >> "$GITHUB_OUTPUT"
+          echo "SOURCE_DATE_EPOCH=${SDE}" >> "$GITHUB_ENV"
+
+      - name: Bootstrap autotools
+        run: |
+          set -euo pipefail
+          if [ -x .slsa-autotools/build-hook.sh ]; then
+            ./.slsa-autotools/build-hook.sh
+          else
+            if   [ -x autogen.sh ]; then ./autogen.sh || true
+            elif [ -x bootstrap ]; then  ./bootstrap  || true
+            fi
+            if [ ! -x ./configure ] && { [ -f configure.ac ] || [ -f configure.in ]; }; then
+              autoreconf -fi
+            fi
+          fi
+          [ -x ./configure ] || { echo "ERROR: no ./configure after bootstrap"; exit 1; }
+
+      - name: Detect Windows build entry point
+        id: windows
+        run: |
+          set -eu
+          if [ -x .slsa-autotools/windows-hook.sh ]; then
+            echo "cmd=${GITHUB_WORKSPACE}/.slsa-autotools/windows-hook.sh" >> "$GITHUB_OUTPUT"
+          elif [ -f .slsa-autotools/windows-hook.sh ]; then
+            echo "cmd=bash ${GITHUB_WORKSPACE}/.slsa-autotools/windows-hook.sh" >> "$GITHUB_OUTPUT"
+          elif [ -f windows/build.bash ]; then
+            echo "cmd=bash ${GITHUB_WORKSPACE}/windows/build.bash" >> "$GITHUB_OUTPUT"
+          else
+            echo "ERROR: Windows job reached without an entry point; needs.test.outputs.has_windows gate disagrees with detection?"
+            exit 1
+          fi
+
+      - name: Install reproducibility wrappers
+        run: |
+          set -euo pipefail
+          mkdir -p /opt/wrappers
+          for TRIPLET in i686-w64-mingw32 x86_64-w64-mingw32; do
+            cat > "/opt/wrappers/${TRIPLET}-gcc" <<WRAP
+          #!/bin/sh
+          exec /usr/bin/${TRIPLET}-gcc \\
+            "-ffile-prefix-map=\${DISTDIR_TOP}=." \\
+            -Wl,--no-insert-timestamp \\
+            -Wl,--build-id=none \\
+            "\$@"
+          WRAP
+            chmod +x "/opt/wrappers/${TRIPLET}-gcc"
+          done
+          cat > /opt/wrappers/7z <<'WRAP'
+          #!/bin/sh
+          case "$1" in
+            a|u)
+              find . -exec touch --no-dereference -h -d "@${SOURCE_DATE_EPOCH}" {} + 2>/dev/null || true
+              ;;
+          esac
+          exec /usr/bin/7z "$@"
+          WRAP
+          chmod +x /opt/wrappers/7z
+          echo "PATH=/opt/wrappers:${PATH}" >> "$GITHUB_ENV"
+
+      - name: Build Windows binaries
         env:
           TAR_OPTIONS: '--owner=0 --group=0 --numeric-owner --mode=u+rw,go+r-w --sort=name --clamp-mtime --mtime=@${{ steps.meta.outputs.sde }}'
           LC_COLLATE: 'C'
         run: |
           set -euo pipefail
           WINDOWS_CMD='${{ steps.windows.outputs.cmd }}'
-          mkdir build2
-          cd build2
+          mkdir build
+          cd build
           ../configure --quiet
           make -s distdir
+          PACKAGE=$(awk -F' *= *' '$1 == "PACKAGE" {print $2; exit}' Makefile)
+          VERSION=$(awk -F' *= *' '$1 == "VERSION" {print $2; exit}' Makefile)
+          DISTDIR="${PACKAGE}-${VERSION}"
+          [ -n "${PACKAGE}" ] && [ -n "${VERSION}" ] && [ -d "${DISTDIR}" ] \
+            || { echo "ERROR: could not locate distdir (PACKAGE=${PACKAGE:-unset} VERSION=${VERSION:-unset})"; ls -la; exit 1; }
           FIXED_DATE=$(date -u -d "@${SOURCE_DATE_EPOCH}" "+%Y-%m-%d %H:%M+0000")
-          find "${distdir}" -type f \( -name '*.pot' -o -name '*.po' \) \
+          find "${DISTDIR}" -type f \( -name '*.pot' -o -name '*.po' \) \
             -exec sed -i "s|^\"POT-Creation-Date: .*|\"POT-Creation-Date: ${FIXED_DATE}\\\\n\"|" {} + 2>/dev/null || true
-          cd "${distdir}"
+          cd "${DISTDIR}"
           DISTDIR_TOP="$(pwd)"
           export DISTDIR_TOP
           bash -c "${WINDOWS_CMD}"
-          mkdir -p ../../artifacts/win-pass2
+          mkdir -p "${GITHUB_WORKSPACE}/win-dist"
           shopt -s nullglob
+          copied=0
           for f in *-windows.zip *-windows.7z *-windows.tar.gz *-windows.tar.xz; do
-            cp "$f" ../../artifacts/win-pass2/
+            cp "$f" "${GITHUB_WORKSPACE}/win-dist/"
+            copied=$((copied+1))
           done
+          if [ "${copied}" -eq 0 ]; then
+            echo "ERROR: Windows build produced no *-windows.{zip,7z,tar.gz,tar.xz} artifacts in $(pwd)"
+            ls -la
+            exit 1
+          fi
+
+      - name: Upload pass 2 Windows binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-pass2
+          path: win-dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  verify_windows:
+    name: Verify Windows reproducibility, attest, sign
+    needs: [build_windows_pass1, build_windows_pass2]
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/${{ github.repository }}/builder@sha256:{{BUILDER_DIGEST}}
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
+
+    steps:
+      - name: Download pass 1 Windows binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-pass1
+          path: win-pass1
+
+      - name: Download pass 2 Windows binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-pass2
+          path: win-pass2
 
       - name: Verify Windows reproducibility
         run: |
           set -eu
-          cd artifacts
+          (cd win-pass1 && ls -1 | LC_ALL=C sort) > pass1.list
+          (cd win-pass2 && ls -1 | LC_ALL=C sort) > pass2.list
+          if ! diff -u pass1.list pass2.list; then
+            echo "FAIL: pass1 and pass2 emitted different file sets"
+            exit 1
+          fi
           sha256sum win-pass1/* win-pass2/*
           for f in win-pass1/*; do
             base=$(basename "$f")
@@ -610,7 +918,6 @@ jobs:
         if: ${{ failure() }}
         run: |
           set -u
-          cd artifacts
           sha256sum win-pass1/* win-pass2/* || true
           for f in win-pass1/*; do
             base=$(basename "$f")
@@ -632,7 +939,7 @@ jobs:
         run: |
           set -euo pipefail
           MIN_SIZE=131072   # 128 KiB floor — tune per project
-          for f in artifacts/win-pass1/*; do
+          for f in win-pass1/*; do
             SIZE=$(wc -c < "$f")
             if [ "${SIZE}" -lt "${MIN_SIZE}" ]; then
               echo "FAIL: $(basename "$f") suspiciously small: ${SIZE} < ${MIN_SIZE}"
@@ -642,10 +949,12 @@ jobs:
           done
 
       - name: Assemble release artifacts
+        # Sign pass1's bytes — they're identical to pass2's per the
+        # bit-compare above, so the choice is arbitrary.
         run: |
           set -eu
           mkdir -p release
-          cp artifacts/win-pass1/* release/
+          cp win-pass1/* release/
 
       - name: SLSA build provenance
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
@@ -691,15 +1000,15 @@ jobs:
 
   publish:
     name: Create draft release
-    # needs build_windows too so publish waits for it, but we can't
-    # block on it: projects without a Windows path see build_windows
-    # as skipped. The if: below permits skipped + success while
-    # refusing failed/cancelled.
-    needs: [build_source, build_windows]
+    # needs verify_windows too so publish waits for it, but we can't
+    # block on it: projects without a Windows path see the windows
+    # pass jobs (and therefore verify_windows) as skipped. The if:
+    # below permits skipped + success while refusing failed/cancelled.
+    needs: [verify_source, verify_windows]
     if: |
       always()
-      && needs.build_source.result == 'success'
-      && (needs.build_windows.result == 'success' || needs.build_windows.result == 'skipped')
+      && needs.verify_source.result == 'success'
+      && (needs.verify_windows.result == 'success' || needs.verify_windows.result == 'skipped')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -729,7 +1038,7 @@ jobs:
           path: release
 
       - name: Download Windows artifacts
-        if: needs.build_windows.result == 'success'
+        if: needs.verify_windows.result == 'success'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: windows-artifacts
