@@ -197,6 +197,10 @@ jobs:
             file \
             xz-utils \
             gzip \
+            bzip2 \
+            lzip \
+            zip \
+            zstd \
             tar \
             groff \
             bsdextrautils \
