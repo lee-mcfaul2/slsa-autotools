@@ -176,13 +176,33 @@ fi
 log "Builder digest: sha256:${BUILDER_DIGEST}"
 
 # ---- pick source branch -----------------------------------------
+#
+# Query the remote default branch live. The local symbolic ref
+# refs/remotes/origin/HEAD is cached at clone time and does NOT
+# update when the remote default flips — so reading it locally
+# silently picks the wrong base whenever a fork's default has been
+# changed since the last clone. (Surfaced when a libpng-1.6.58 base
+# branch was set as default but the local clone still pointed at
+# libpng18, producing a topic branch on top of the wrong history.)
+# Refreshing via gh api is one network call and authoritative.
 
-SRC_BRANCH=$(git -C "${TARGET}" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null \
-  | sed 's#^origin/##' || true)
+SRC_BRANCH=$(gh api "repos/${OWNER}/${REPO}" --jq .default_branch 2>/dev/null || true)
+if [ -z "${SRC_BRANCH}" ]; then
+  warn "gh api default_branch lookup failed; falling back to local origin/HEAD."
+  warn "If that's stale, the topic branch will be based on the wrong commit."
+  SRC_BRANCH=$(git -C "${TARGET}" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null \
+    | sed 's#^origin/##' || true)
+fi
 if [ -z "${SRC_BRANCH}" ]; then
   SRC_BRANCH=$(git -C "${TARGET}" rev-parse --abbrev-ref HEAD)
-  warn "Could not determine default branch from origin; using current HEAD: ${SRC_BRANCH}"
+  warn "Could not determine default branch from origin either; using current HEAD: ${SRC_BRANCH}"
 fi
+log "Default branch (from remote): ${SRC_BRANCH}"
+
+# Sync local origin/HEAD too so future operations in this clone
+# don't carry the stale ref forward.
+git -C "${TARGET}" remote set-head origin "${SRC_BRANCH}" >/dev/null 2>&1 || true
+git -C "${TARGET}" fetch origin "${SRC_BRANCH}" >/dev/null 2>&1 || true
 
 TOPIC_BRANCH=slsa-autotools-init-release
 if git -C "${TARGET}" show-ref --verify --quiet "refs/heads/${TOPIC_BRANCH}"; then
