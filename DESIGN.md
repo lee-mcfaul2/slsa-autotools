@@ -305,3 +305,132 @@ ship attestations that mean anything until this many subtle
 timestamp / ordering / locale dependencies are pinned down."
 The diff is cheap; each fix is mechanical once identified. The
 expensive part is knowing they exist.
+
+## Pending refactor: per-pass container isolation
+
+> **Status:** queued for a fresh session. Read this section on
+> resume; the architectural decision is made, only the
+> implementation remains.
+
+### The problem
+
+The current `build_source` and `build_windows` jobs run both
+reproducibility passes inside the same container, in sibling
+build directories (`build1/` and `build2/`). The two passes
+therefore have *different absolute build paths* — `pwd` in pass
+1 is `.../build1/${PACKAGE}-${VERSION}`, in pass 2
+`.../build2/${PACKAGE}-${VERSION}`. Most autotools-derived
+artefacts are oblivious to that difference, but a few install-
+time outputs bake the configure-time `--prefix` into their
+content verbatim:
+
+- `lib/pkgconfig/*.pc` — `prefix=...` line
+- `lib/lib*.la` libtool archives — `libdir=...` line
+- Some projects' generated headers that embed install paths
+
+For libsodium specifically, the build_windows hook configures
+with `--prefix="$(pwd)/libsodium-win64"`. `$(pwd)` differs
+across passes, so the resulting `libsodium.pc` differs, the
+tarball differs, the bit-compare fails. The same class of bug
+will hit any project whose `make dist` happens to also bake
+absolute paths in.
+
+A `DESTDIR` workaround inside the hook (configure with
+`--prefix=/`, install with `make install
+DESTDIR=$(pwd)/libsodium-winN`) fixes libsodium specifically
+but is per-target whack-a-mole.
+
+### The chosen architecture
+
+Each pass runs in **its own container**, both at the same `pwd`
+inside the container (e.g. `/work/build/${PACKAGE}-${VERSION}`).
+Identical absolute paths in both passes means anything that
+embeds the build path embeds the *same* build path. The whole
+class of "absolute-path leakage broke reproducibility" goes
+away by construction, with no per-target hooks needed.
+
+GitHub Actions natively supports this: each top-level `job:` is
+its own runner with its own container, and jobs run in parallel
+by default. Artifact upload/download is the standard way jobs
+hand bytes to one another.
+
+### Target shape (release.yml jobs)
+
+```
+test
+  ↓ (provides outputs.has_windows)
+  ├─ build_source_pass1   ─┐
+  ├─ build_source_pass2   ─┤  → verify_source   ─┐
+  ├─ build_windows_pass1  ─┐                     ├─→ publish
+  └─ build_windows_pass2  ─┘  → verify_windows  ─┘
+                              (only if has_windows == 'true')
+```
+
+- `build_source_pass{1,2}`: identical jobs. Each does
+  checkout, bootstrap, configure, distdir, tar, gzip, xz,
+  optional bz2. Uploads its raw `${DISTDIR}.tar.*` set as an
+  artifact named `source-pass1` / `source-pass2`. No
+  attestation, no signing.
+- `verify_source`: needs both pass jobs. Downloads both
+  artifacts, runs `diff -q` on every file with the same name,
+  fails if any byte differs. Then assembles the final
+  `release/` directory from pass1's bytes, runs
+  `actions/attest-build-provenance`, runs `cosign sign-blob`,
+  writes `SHA256SUMS`, uploads `source-artifacts` artifact.
+- `build_windows_pass{1,2}`: gated on
+  `needs.test.outputs.has_windows == 'true'`. Identical to the
+  current `build_windows` step body but without the second
+  pass and without the verify+attest+sign steps.
+- `verify_windows`: gated the same way; needs both pass jobs.
+  Same shape as `verify_source`.
+- `publish`: needs `[verify_source, verify_windows]`. Uses the
+  existing skipped-allowed gate for `verify_windows` so
+  Windows-less projects publish cleanly.
+
+### What carries over unchanged
+
+- Hooks themselves (`windows-hook.sh`, `build-hook.sh`).
+- Reproducibility wrappers in `/opt/wrappers/`.
+- The pinned builder image — both pass jobs use the same
+  `container: image:` digest.
+- Liar-detector size floors and manifest checks (move to
+  `verify_*` jobs).
+- SLSA attestation and cosign signing semantics. The bytes
+  being signed are the bit-verified pass1 bytes — same trust
+  property, just attested in the verify step rather than the
+  build step.
+
+### Net effect
+
+- Reproducibility becomes a property of the architecture,
+  not of each target's build system happening not to leak
+  state. The `DESTDIR` workaround in libsodium's hook can be
+  reverted; no equivalent workaround is needed for any future
+  project's hook either.
+- Wall-clock time drops: pass1 and pass2 run concurrently, so
+  total ≈ max(pass1, pass2) + verify overhead, instead of
+  pass1 + pass2 sequentially. ~6 min instead of ~12 min for
+  libsodium-scale Windows builds.
+- Runner-minute usage roughly doubles (two parallel runners
+  per pair instead of one sequential). Acceptable trade.
+
+### Implementation notes for a fresh session
+
+- The body of `build_*_pass{1,2}` is mechanically identical
+  per pair. Either inline-duplicate (simplest, slightly bigger
+  YAML) or extract a reusable workflow (`workflow_call`).
+  Inline is fine for v1 — the duplication is bounded.
+- Move the `Diagnose` step (currently `if: failure()` in the
+  monolithic build job) into the `verify_*` job. It only runs
+  on diff failure, which now happens there.
+- After landing in the template, propagate to xz and
+  libsodium's `release.yml`. xz currently passes its bit-
+  compare so the refactor is functional; libsodium's hook
+  already accommodates the contained pwd (no DESTDIR needed
+  once each pass has identical pwd).
+- Update the relevant DESIGN.md sections — the `dist-hook`
+  side-effects section (#3) becomes weaker because each pass
+  is a cold container, not a sibling build dir; the underlying
+  fixes still apply but the framing becomes "each pass is
+  cold by construction" rather than "each pass uses a fresh
+  build dir within a shared container."
