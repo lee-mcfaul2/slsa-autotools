@@ -217,7 +217,6 @@ render_template() {
     -e "s|{{GENERATOR_URL}}|${GENERATOR_URL}|g" \
     -e "s|{{GENERATOR_SHA}}|${GENERATOR_SHA}|g" \
     -e "s|{{OWNER_TYPE_PATH}}|${OWNER_TYPE_PATH}|g" \
-    -e "s|{{DEFAULT_BRANCH}}|${SRC_BRANCH}|g" \
     "${src}" > "${dst}"
 }
 

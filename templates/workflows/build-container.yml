@@ -28,12 +28,15 @@
 name: Build container
 
 on:
+  # Fires on any branch where the Dockerfile or this workflow
+  # changes, but the build job below gates on the repo's *current*
+  # default branch via github.event.repository.default_branch — so
+  # the image only gets published when these files land on the
+  # canonical branch, whatever it happens to be. No scaffolding-time
+  # branch name is baked in; works through default-branch renames
+  # and through forks whose default differs from upstream.
   push:
-    # Default branch name is resolved at scaffolding time by the
-    # slsa-autotools init-container script from origin/HEAD on the
-    # target repo — so this works whether the project uses main,
-    # master, trunk, or anything else.
-    branches: [{{DEFAULT_BRANCH}}]
+    branches: ['**']
     paths:
       - 'Dockerfile'
       - '.github/workflows/build-container.yml'
@@ -45,6 +48,11 @@ permissions: {}
 jobs:
   build:
     name: Build and publish pinned builder image
+    # Only publish when the trigger lands on the repo's current
+    # default branch. Pushes to feature branches that touch
+    # Dockerfile / build-container.yml will show as "Skipped" in
+    # the UI rather than producing an image — cosmetic, accurate.
+    if: github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
