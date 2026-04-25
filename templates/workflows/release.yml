@@ -129,25 +129,27 @@ jobs:
         run: |
           set -euo pipefail
           # Bootstrap precedence: project hook > autogen.sh >
-          # bootstrap > bare autoreconf. Each branch ends with a
-          # configure check so a missing or guard-rail-style script
-          # still falls through to an autoreconf -fi fallback. The
-          # bare-configure.ac branch ALWAYS autoreconfs even when a
-          # ./configure ships in tree, because the shipped
-          # Makefile.in's rebuild rules can pin a specific older
-          # automake version that the builder image does not have
-          # (gnu-hello shipped a Makefile.in calling aclocal-1.15;
-          # the builder has 1.16). Matches scan.yml's BUILD_CMD —
-          # both flows must regenerate against the same toolchain or
-          # scan's pinned Dockerfile won't reflect what release runs.
+          # bootstrap > bare autoreconf. Every non-hook branch ends
+          # with autoreconf -fi UNCONDITIONALLY, even when autogen
+          # produced ./configure or one already shipped in tree.
+          # The shipped Makefile.in's automake rebuild rules pin a
+          # specific automake API version (gnu-hello shipped 1.15
+          # rules, libpng shipped 1.18.1 rules; the builder image
+          # has 1.16). Any mtime-driven aclocal.m4 regeneration
+          # would then call a missing aclocal-X.Y and exit 127.
+          # autoreconf -fi rewrites Makefile.in against the builder
+          # image's automake, so the runtime rebuild rules match
+          # what's actually installed. Matches scan.yml's BUILD_CMD
+          # — both flows regenerate against the same toolchain so
+          # scan's pinned Dockerfile reflects what release runs.
           if [ -x .slsa-autotools/build-hook.sh ]; then
             ./.slsa-autotools/build-hook.sh
           elif [ -x autogen.sh ]; then
             ./autogen.sh || true
-            [ -x ./configure ] || autoreconf -fi
+            autoreconf -fi
           elif [ -x bootstrap ]; then
             ./bootstrap || true
-            [ -x ./configure ] || autoreconf -fi
+            autoreconf -fi
           elif [ -f configure.ac ] || [ -f configure.in ]; then
             autoreconf -fi
           fi
@@ -218,25 +220,27 @@ jobs:
         run: |
           set -euo pipefail
           # Bootstrap precedence: project hook > autogen.sh >
-          # bootstrap > bare autoreconf. Each branch ends with a
-          # configure check so a missing or guard-rail-style script
-          # still falls through to an autoreconf -fi fallback. The
-          # bare-configure.ac branch ALWAYS autoreconfs even when a
-          # ./configure ships in tree, because the shipped
-          # Makefile.in's rebuild rules can pin a specific older
-          # automake version that the builder image does not have
-          # (gnu-hello shipped a Makefile.in calling aclocal-1.15;
-          # the builder has 1.16). Matches scan.yml's BUILD_CMD —
-          # both flows must regenerate against the same toolchain or
-          # scan's pinned Dockerfile won't reflect what release runs.
+          # bootstrap > bare autoreconf. Every non-hook branch ends
+          # with autoreconf -fi UNCONDITIONALLY, even when autogen
+          # produced ./configure or one already shipped in tree.
+          # The shipped Makefile.in's automake rebuild rules pin a
+          # specific automake API version (gnu-hello shipped 1.15
+          # rules, libpng shipped 1.18.1 rules; the builder image
+          # has 1.16). Any mtime-driven aclocal.m4 regeneration
+          # would then call a missing aclocal-X.Y and exit 127.
+          # autoreconf -fi rewrites Makefile.in against the builder
+          # image's automake, so the runtime rebuild rules match
+          # what's actually installed. Matches scan.yml's BUILD_CMD
+          # — both flows regenerate against the same toolchain so
+          # scan's pinned Dockerfile reflects what release runs.
           if [ -x .slsa-autotools/build-hook.sh ]; then
             ./.slsa-autotools/build-hook.sh
           elif [ -x autogen.sh ]; then
             ./autogen.sh || true
-            [ -x ./configure ] || autoreconf -fi
+            autoreconf -fi
           elif [ -x bootstrap ]; then
             ./bootstrap || true
-            [ -x ./configure ] || autoreconf -fi
+            autoreconf -fi
           elif [ -f configure.ac ] || [ -f configure.in ]; then
             autoreconf -fi
           fi
@@ -367,25 +371,27 @@ jobs:
         run: |
           set -euo pipefail
           # Bootstrap precedence: project hook > autogen.sh >
-          # bootstrap > bare autoreconf. Each branch ends with a
-          # configure check so a missing or guard-rail-style script
-          # still falls through to an autoreconf -fi fallback. The
-          # bare-configure.ac branch ALWAYS autoreconfs even when a
-          # ./configure ships in tree, because the shipped
-          # Makefile.in's rebuild rules can pin a specific older
-          # automake version that the builder image does not have
-          # (gnu-hello shipped a Makefile.in calling aclocal-1.15;
-          # the builder has 1.16). Matches scan.yml's BUILD_CMD —
-          # both flows must regenerate against the same toolchain or
-          # scan's pinned Dockerfile won't reflect what release runs.
+          # bootstrap > bare autoreconf. Every non-hook branch ends
+          # with autoreconf -fi UNCONDITIONALLY, even when autogen
+          # produced ./configure or one already shipped in tree.
+          # The shipped Makefile.in's automake rebuild rules pin a
+          # specific automake API version (gnu-hello shipped 1.15
+          # rules, libpng shipped 1.18.1 rules; the builder image
+          # has 1.16). Any mtime-driven aclocal.m4 regeneration
+          # would then call a missing aclocal-X.Y and exit 127.
+          # autoreconf -fi rewrites Makefile.in against the builder
+          # image's automake, so the runtime rebuild rules match
+          # what's actually installed. Matches scan.yml's BUILD_CMD
+          # — both flows regenerate against the same toolchain so
+          # scan's pinned Dockerfile reflects what release runs.
           if [ -x .slsa-autotools/build-hook.sh ]; then
             ./.slsa-autotools/build-hook.sh
           elif [ -x autogen.sh ]; then
             ./autogen.sh || true
-            [ -x ./configure ] || autoreconf -fi
+            autoreconf -fi
           elif [ -x bootstrap ]; then
             ./bootstrap || true
-            [ -x ./configure ] || autoreconf -fi
+            autoreconf -fi
           elif [ -f configure.ac ] || [ -f configure.in ]; then
             autoreconf -fi
           fi
@@ -640,25 +646,27 @@ jobs:
         run: |
           set -euo pipefail
           # Bootstrap precedence: project hook > autogen.sh >
-          # bootstrap > bare autoreconf. Each branch ends with a
-          # configure check so a missing or guard-rail-style script
-          # still falls through to an autoreconf -fi fallback. The
-          # bare-configure.ac branch ALWAYS autoreconfs even when a
-          # ./configure ships in tree, because the shipped
-          # Makefile.in's rebuild rules can pin a specific older
-          # automake version that the builder image does not have
-          # (gnu-hello shipped a Makefile.in calling aclocal-1.15;
-          # the builder has 1.16). Matches scan.yml's BUILD_CMD —
-          # both flows must regenerate against the same toolchain or
-          # scan's pinned Dockerfile won't reflect what release runs.
+          # bootstrap > bare autoreconf. Every non-hook branch ends
+          # with autoreconf -fi UNCONDITIONALLY, even when autogen
+          # produced ./configure or one already shipped in tree.
+          # The shipped Makefile.in's automake rebuild rules pin a
+          # specific automake API version (gnu-hello shipped 1.15
+          # rules, libpng shipped 1.18.1 rules; the builder image
+          # has 1.16). Any mtime-driven aclocal.m4 regeneration
+          # would then call a missing aclocal-X.Y and exit 127.
+          # autoreconf -fi rewrites Makefile.in against the builder
+          # image's automake, so the runtime rebuild rules match
+          # what's actually installed. Matches scan.yml's BUILD_CMD
+          # — both flows regenerate against the same toolchain so
+          # scan's pinned Dockerfile reflects what release runs.
           if [ -x .slsa-autotools/build-hook.sh ]; then
             ./.slsa-autotools/build-hook.sh
           elif [ -x autogen.sh ]; then
             ./autogen.sh || true
-            [ -x ./configure ] || autoreconf -fi
+            autoreconf -fi
           elif [ -x bootstrap ]; then
             ./bootstrap || true
-            [ -x ./configure ] || autoreconf -fi
+            autoreconf -fi
           elif [ -f configure.ac ] || [ -f configure.in ]; then
             autoreconf -fi
           fi
@@ -822,25 +830,27 @@ jobs:
         run: |
           set -euo pipefail
           # Bootstrap precedence: project hook > autogen.sh >
-          # bootstrap > bare autoreconf. Each branch ends with a
-          # configure check so a missing or guard-rail-style script
-          # still falls through to an autoreconf -fi fallback. The
-          # bare-configure.ac branch ALWAYS autoreconfs even when a
-          # ./configure ships in tree, because the shipped
-          # Makefile.in's rebuild rules can pin a specific older
-          # automake version that the builder image does not have
-          # (gnu-hello shipped a Makefile.in calling aclocal-1.15;
-          # the builder has 1.16). Matches scan.yml's BUILD_CMD —
-          # both flows must regenerate against the same toolchain or
-          # scan's pinned Dockerfile won't reflect what release runs.
+          # bootstrap > bare autoreconf. Every non-hook branch ends
+          # with autoreconf -fi UNCONDITIONALLY, even when autogen
+          # produced ./configure or one already shipped in tree.
+          # The shipped Makefile.in's automake rebuild rules pin a
+          # specific automake API version (gnu-hello shipped 1.15
+          # rules, libpng shipped 1.18.1 rules; the builder image
+          # has 1.16). Any mtime-driven aclocal.m4 regeneration
+          # would then call a missing aclocal-X.Y and exit 127.
+          # autoreconf -fi rewrites Makefile.in against the builder
+          # image's automake, so the runtime rebuild rules match
+          # what's actually installed. Matches scan.yml's BUILD_CMD
+          # — both flows regenerate against the same toolchain so
+          # scan's pinned Dockerfile reflects what release runs.
           if [ -x .slsa-autotools/build-hook.sh ]; then
             ./.slsa-autotools/build-hook.sh
           elif [ -x autogen.sh ]; then
             ./autogen.sh || true
-            [ -x ./configure ] || autoreconf -fi
+            autoreconf -fi
           elif [ -x bootstrap ]; then
             ./bootstrap || true
-            [ -x ./configure ] || autoreconf -fi
+            autoreconf -fi
           elif [ -f configure.ac ] || [ -f configure.in ]; then
             autoreconf -fi
           fi

@@ -242,19 +242,28 @@ jobs:
 
           # Bootstrap sequence. Priority:
           #   1. Project-provided .slsa-autotools/build-hook.sh.
-          #   2. ./autogen.sh or ./bootstrap if present, then a
-          #      fallback to autoreconf -fi if that didn't produce
-          #      a configure script (many projects gate their
-          #      autogen behind a -s / --dev flag so running it
-          #      bare prints a warning and exits without doing any
-          #      work — libsodium is a canonical example).
+          #   2. ./autogen.sh or ./bootstrap if present, ALWAYS
+          #      followed by autoreconf -fi unconditionally — even
+          #      when autogen produced configure successfully. This
+          #      is what guarantees the trace observes the autotools
+          #      toolchain (autoconf, automake, libtoolize, m4) and
+          #      pins it in the emitted Dockerfile. Otherwise a
+          #      project that ships pre-generated Makefile.in (e.g.
+          #      libpng) sends autogen.sh down its mode=configure
+          #      branch which refuses to regenerate, autoreconf
+          #      never runs during scan, and the builder image ends
+          #      up missing autoreconf — release-time bootstrap
+          #      then fails the moment any rebuild rule fires.
+          #      autoreconf -fi is idempotent; rerunning it after a
+          #      successful autogen costs only the trace coverage
+          #      we wanted in the first place.
           #   3. Plain autoreconf -fi against configure.ac.
           if [ -x .slsa-autotools/build-hook.sh ]; then
             BUILD_CMD='./.slsa-autotools/build-hook.sh'
           elif [ -x autogen.sh ]; then
-            BUILD_CMD='./autogen.sh; [ -x ./configure ] || autoreconf -fi; ./configure --quiet && make -s dist'
+            BUILD_CMD='./autogen.sh; autoreconf -fi; ./configure --quiet && make -s dist'
           elif [ -x bootstrap ]; then
-            BUILD_CMD='./bootstrap; [ -x ./configure ] || autoreconf -fi; ./configure --quiet && make -s dist'
+            BUILD_CMD='./bootstrap; autoreconf -fi; ./configure --quiet && make -s dist'
           elif [ -f configure.ac ] || [ -f configure.in ]; then
             BUILD_CMD='autoreconf -fi && ./configure --quiet && make -s dist'
           else

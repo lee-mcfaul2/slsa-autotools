@@ -184,17 +184,36 @@ esac
 
 # ---- pick the source branch to base our new branch on ------------
 #
-# Users may be on any branch when they run this. We want a clean
-# base commit that their default branch points to (so the PR diff
-# reads cleanly). Fetch the default branch name from the remote if
-# available; otherwise fall back to whatever HEAD points to.
+# Query the remote default branch live. The local symbolic ref
+# refs/remotes/origin/HEAD is cached at clone time and does NOT
+# update when the remote default flips, so reading it locally
+# silently picks the wrong base whenever a fork's default has been
+# changed since the last clone. One unauthenticated HTTP GET to the
+# repo endpoint is authoritative; same User-Agent header style as
+# the org/user check above.
 
-SRC_BRANCH=$(git -C "${TARGET}" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null \
-  | sed 's#^origin/##' || true)
+SRC_BRANCH=$(curl -sS \
+  -H 'Accept: application/vnd.github+json' \
+  -H 'User-Agent: slsa-autotools-init-container' \
+  "https://api.github.com/repos/${OWNER}/${REPO}" 2>/dev/null \
+  | sed -n 's/.*"default_branch"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+  | head -1 || true)
+if [ -z "${SRC_BRANCH}" ]; then
+  warn "Could not fetch default_branch from api.github.com; falling back to local origin/HEAD."
+  warn "If that's stale, the topic branch will be based on the wrong commit."
+  SRC_BRANCH=$(git -C "${TARGET}" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null \
+    | sed 's#^origin/##' || true)
+fi
 if [ -z "${SRC_BRANCH}" ]; then
   SRC_BRANCH=$(git -C "${TARGET}" rev-parse --abbrev-ref HEAD)
-  warn "Could not determine default branch from origin; using current HEAD: ${SRC_BRANCH}"
+  warn "Could not determine default branch from origin either; using current HEAD: ${SRC_BRANCH}"
 fi
+log "Default branch (from remote): ${SRC_BRANCH}"
+
+# Sync local origin/HEAD too so future operations in this clone
+# don't carry the stale ref forward.
+git -C "${TARGET}" remote set-head origin "${SRC_BRANCH}" >/dev/null 2>&1 || true
+git -C "${TARGET}" fetch origin "${SRC_BRANCH}" >/dev/null 2>&1 || true
 
 TOPIC_BRANCH=slsa-autotools-init
 
