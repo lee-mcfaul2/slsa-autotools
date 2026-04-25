@@ -126,20 +126,30 @@ jobs:
           fi
 
       - name: Bootstrap autotools
-        # Same logic as the build job (and scan.yml): project
-        # hook first, then autogen.sh / bootstrap with an
-        # autoreconf fallback for guard-rail-style scripts.
         run: |
           set -euo pipefail
+          # Bootstrap precedence: project hook > autogen.sh >
+          # bootstrap > bare autoreconf. Each branch ends with a
+          # configure check so a missing or guard-rail-style script
+          # still falls through to an autoreconf -fi fallback. The
+          # bare-configure.ac branch ALWAYS autoreconfs even when a
+          # ./configure ships in tree, because the shipped
+          # Makefile.in's rebuild rules can pin a specific older
+          # automake version that the builder image does not have
+          # (gnu-hello shipped a Makefile.in calling aclocal-1.15;
+          # the builder has 1.16). Matches scan.yml's BUILD_CMD —
+          # both flows must regenerate against the same toolchain or
+          # scan's pinned Dockerfile won't reflect what release runs.
           if [ -x .slsa-autotools/build-hook.sh ]; then
             ./.slsa-autotools/build-hook.sh
-          else
-            if   [ -x autogen.sh ]; then ./autogen.sh || true
-            elif [ -x bootstrap ]; then  ./bootstrap  || true
-            fi
-            if [ ! -x ./configure ] && { [ -f configure.ac ] || [ -f configure.in ]; }; then
-              autoreconf -fi
-            fi
+          elif [ -x autogen.sh ]; then
+            ./autogen.sh || true
+            [ -x ./configure ] || autoreconf -fi
+          elif [ -x bootstrap ]; then
+            ./bootstrap || true
+            [ -x ./configure ] || autoreconf -fi
+          elif [ -f configure.ac ] || [ -f configure.in ]; then
+            autoreconf -fi
           fi
           [ -x ./configure ] || { echo "ERROR: no ./configure after bootstrap"; exit 1; }
 
@@ -207,15 +217,28 @@ jobs:
       - name: Bootstrap autotools
         run: |
           set -euo pipefail
+          # Bootstrap precedence: project hook > autogen.sh >
+          # bootstrap > bare autoreconf. Each branch ends with a
+          # configure check so a missing or guard-rail-style script
+          # still falls through to an autoreconf -fi fallback. The
+          # bare-configure.ac branch ALWAYS autoreconfs even when a
+          # ./configure ships in tree, because the shipped
+          # Makefile.in's rebuild rules can pin a specific older
+          # automake version that the builder image does not have
+          # (gnu-hello shipped a Makefile.in calling aclocal-1.15;
+          # the builder has 1.16). Matches scan.yml's BUILD_CMD —
+          # both flows must regenerate against the same toolchain or
+          # scan's pinned Dockerfile won't reflect what release runs.
           if [ -x .slsa-autotools/build-hook.sh ]; then
             ./.slsa-autotools/build-hook.sh
-          else
-            if   [ -x autogen.sh ]; then ./autogen.sh || true
-            elif [ -x bootstrap ]; then  ./bootstrap  || true
-            fi
-            if [ ! -x ./configure ] && { [ -f configure.ac ] || [ -f configure.in ]; }; then
-              autoreconf -fi
-            fi
+          elif [ -x autogen.sh ]; then
+            ./autogen.sh || true
+            [ -x ./configure ] || autoreconf -fi
+          elif [ -x bootstrap ]; then
+            ./bootstrap || true
+            [ -x ./configure ] || autoreconf -fi
+          elif [ -f configure.ac ] || [ -f configure.in ]; then
+            autoreconf -fi
           fi
           [ -x ./configure ] || { echo "ERROR: no ./configure after bootstrap"; exit 1; }
 
@@ -343,15 +366,28 @@ jobs:
       - name: Bootstrap autotools
         run: |
           set -euo pipefail
+          # Bootstrap precedence: project hook > autogen.sh >
+          # bootstrap > bare autoreconf. Each branch ends with a
+          # configure check so a missing or guard-rail-style script
+          # still falls through to an autoreconf -fi fallback. The
+          # bare-configure.ac branch ALWAYS autoreconfs even when a
+          # ./configure ships in tree, because the shipped
+          # Makefile.in's rebuild rules can pin a specific older
+          # automake version that the builder image does not have
+          # (gnu-hello shipped a Makefile.in calling aclocal-1.15;
+          # the builder has 1.16). Matches scan.yml's BUILD_CMD —
+          # both flows must regenerate against the same toolchain or
+          # scan's pinned Dockerfile won't reflect what release runs.
           if [ -x .slsa-autotools/build-hook.sh ]; then
             ./.slsa-autotools/build-hook.sh
-          else
-            if   [ -x autogen.sh ]; then ./autogen.sh || true
-            elif [ -x bootstrap ]; then  ./bootstrap  || true
-            fi
-            if [ ! -x ./configure ] && { [ -f configure.ac ] || [ -f configure.in ]; }; then
-              autoreconf -fi
-            fi
+          elif [ -x autogen.sh ]; then
+            ./autogen.sh || true
+            [ -x ./configure ] || autoreconf -fi
+          elif [ -x bootstrap ]; then
+            ./bootstrap || true
+            [ -x ./configure ] || autoreconf -fi
+          elif [ -f configure.ac ] || [ -f configure.in ]; then
+            autoreconf -fi
           fi
           [ -x ./configure ] || { echo "ERROR: no ./configure after bootstrap"; exit 1; }
 
@@ -603,15 +639,28 @@ jobs:
       - name: Bootstrap autotools
         run: |
           set -euo pipefail
+          # Bootstrap precedence: project hook > autogen.sh >
+          # bootstrap > bare autoreconf. Each branch ends with a
+          # configure check so a missing or guard-rail-style script
+          # still falls through to an autoreconf -fi fallback. The
+          # bare-configure.ac branch ALWAYS autoreconfs even when a
+          # ./configure ships in tree, because the shipped
+          # Makefile.in's rebuild rules can pin a specific older
+          # automake version that the builder image does not have
+          # (gnu-hello shipped a Makefile.in calling aclocal-1.15;
+          # the builder has 1.16). Matches scan.yml's BUILD_CMD —
+          # both flows must regenerate against the same toolchain or
+          # scan's pinned Dockerfile won't reflect what release runs.
           if [ -x .slsa-autotools/build-hook.sh ]; then
             ./.slsa-autotools/build-hook.sh
-          else
-            if   [ -x autogen.sh ]; then ./autogen.sh || true
-            elif [ -x bootstrap ]; then  ./bootstrap  || true
-            fi
-            if [ ! -x ./configure ] && { [ -f configure.ac ] || [ -f configure.in ]; }; then
-              autoreconf -fi
-            fi
+          elif [ -x autogen.sh ]; then
+            ./autogen.sh || true
+            [ -x ./configure ] || autoreconf -fi
+          elif [ -x bootstrap ]; then
+            ./bootstrap || true
+            [ -x ./configure ] || autoreconf -fi
+          elif [ -f configure.ac ] || [ -f configure.in ]; then
+            autoreconf -fi
           fi
           [ -x ./configure ] || { echo "ERROR: no ./configure after bootstrap"; exit 1; }
 
@@ -772,15 +821,28 @@ jobs:
       - name: Bootstrap autotools
         run: |
           set -euo pipefail
+          # Bootstrap precedence: project hook > autogen.sh >
+          # bootstrap > bare autoreconf. Each branch ends with a
+          # configure check so a missing or guard-rail-style script
+          # still falls through to an autoreconf -fi fallback. The
+          # bare-configure.ac branch ALWAYS autoreconfs even when a
+          # ./configure ships in tree, because the shipped
+          # Makefile.in's rebuild rules can pin a specific older
+          # automake version that the builder image does not have
+          # (gnu-hello shipped a Makefile.in calling aclocal-1.15;
+          # the builder has 1.16). Matches scan.yml's BUILD_CMD —
+          # both flows must regenerate against the same toolchain or
+          # scan's pinned Dockerfile won't reflect what release runs.
           if [ -x .slsa-autotools/build-hook.sh ]; then
             ./.slsa-autotools/build-hook.sh
-          else
-            if   [ -x autogen.sh ]; then ./autogen.sh || true
-            elif [ -x bootstrap ]; then  ./bootstrap  || true
-            fi
-            if [ ! -x ./configure ] && { [ -f configure.ac ] || [ -f configure.in ]; }; then
-              autoreconf -fi
-            fi
+          elif [ -x autogen.sh ]; then
+            ./autogen.sh || true
+            [ -x ./configure ] || autoreconf -fi
+          elif [ -x bootstrap ]; then
+            ./bootstrap || true
+            [ -x ./configure ] || autoreconf -fi
+          elif [ -f configure.ac ] || [ -f configure.in ]; then
+            autoreconf -fi
           fi
           [ -x ./configure ] || { echo "ERROR: no ./configure after bootstrap"; exit 1; }
 
