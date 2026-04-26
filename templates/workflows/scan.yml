@@ -462,6 +462,9 @@ jobs:
             texinfo \
             help2man \
             fig2dev \
+            bison \
+            gperf \
+            wget \
             libc6-dev \
             zlib1g-dev \
             libbz2-dev \
