@@ -255,7 +255,7 @@ jobs:
           mkdir build
           cd build
           ../configure --quiet
-          make -s distdir
+          make -s distdir GITLOG_TO_CHANGELOG=true
           # Find the distdir by reading PACKAGE and VERSION from
           # the generated Makefile (automake emits these as make
           # variables). The earlier ls-based heuristic picked the
@@ -406,7 +406,7 @@ jobs:
           mkdir build
           cd build
           ../configure --quiet
-          make -s distdir
+          make -s distdir GITLOG_TO_CHANGELOG=true
           PACKAGE=$(awk -F' *= *' '$1 == "PACKAGE" {print $2; exit}' Makefile)
           VERSION=$(awk -F' *= *' '$1 == "VERSION" {print $2; exit}' Makefile)
           DISTDIR="${PACKAGE}-${VERSION}"
@@ -748,7 +748,7 @@ jobs:
           mkdir build
           cd build
           ../configure --quiet
-          make -s distdir
+          make -s distdir GITLOG_TO_CHANGELOG=true
           PACKAGE=$(awk -F' *= *' '$1 == "PACKAGE" {print $2; exit}' Makefile)
           VERSION=$(awk -F' *= *' '$1 == "VERSION" {print $2; exit}' Makefile)
           DISTDIR="${PACKAGE}-${VERSION}"
@@ -908,7 +908,7 @@ jobs:
           mkdir build
           cd build
           ../configure --quiet
-          make -s distdir
+          make -s distdir GITLOG_TO_CHANGELOG=true
           PACKAGE=$(awk -F' *= *' '$1 == "PACKAGE" {print $2; exit}' Makefile)
           VERSION=$(awk -F' *= *' '$1 == "VERSION" {print $2; exit}' Makefile)
           DISTDIR="${PACKAGE}-${VERSION}"
