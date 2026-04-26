@@ -74,6 +74,7 @@ jobs:
     outputs:
       release: ${{ steps.pick.outputs.release }}
       image_digest: ${{ steps.digest.outputs.digest }}
+      extra_packages: ${{ steps.pick.outputs.extra_packages }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -165,6 +166,15 @@ jobs:
               DEPS+=("${pkg}|${ver}|${CONFIGURE_AC}:${lineno} PKG_CHECK_MODULES($name)")
             fi
           done < <(grep -nE 'PKG_CHECK_MODULES' "$CONFIGURE_AC" 2>/dev/null || true)
+
+          # Emit the deduped list of -dev packages to a side file so
+          # the YAML wrapper can plumb them as a GITHUB_OUTPUT into
+          # the scan job's apt install step. Empty file is fine if
+          # there are no deps to install.
+          : > /tmp/pick-base-extra-packages.txt
+          for d in "${DEPS[@]}"; do
+            cut -d'|' -f1 <<<"$d"
+          done | sort -u > /tmp/pick-base-extra-packages.txt
 
           if [ ${#DEPS[@]} -eq 0 ]; then
             log "no dep declarations in $CONFIGURE_AC; defaulting to newest LTS (${LTS[0]})"
@@ -272,6 +282,15 @@ jobs:
           RELEASE=$(/tmp/pick-base.sh configure.ac)
           echo "release=${RELEASE}" >> "$GITHUB_OUTPUT"
           echo "Picked Ubuntu release: ${RELEASE}"
+          # Plumb the discovered -dev packages through to the scan
+          # job. Empty file → empty output → install step skips.
+          EXTRA_PACKAGES=$(tr '\n' ' ' < /tmp/pick-base-extra-packages.txt | sed 's/ *$//')
+          echo "extra_packages=${EXTRA_PACKAGES}" >> "$GITHUB_OUTPUT"
+          if [ -n "${EXTRA_PACKAGES}" ]; then
+            echo "Project apt deps: ${EXTRA_PACKAGES}"
+          else
+            echo "Project apt deps: (none)"
+          fi
 
       - name: Resolve image digest for picked release
         id: digest
@@ -469,6 +488,19 @@ jobs:
           fi
           git config --global --add safe.directory "${GITHUB_WORKSPACE}"
 
+      - name: Install project apt deps (resolver-discovered)
+        # The resolve job parsed configure.ac for AM_PATH_<NAME> and
+        # PKG_CHECK_MODULES, and apt-file mapped each to its -dev
+        # package. Install them here so configure can find them; the
+        # subsequent strace will capture the actual file opens and
+        # pin them in the emitted Dockerfile. Skip cleanly when
+        # there are no resolver-discovered deps (most projects).
+        if: needs.resolve.outputs.extra_packages != ''
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086
+          apt-get install -y --no-install-recommends ${{ needs.resolve.outputs.extra_packages }}
+
       - name: Run project build under strace
         id: trace
         run: |
@@ -478,28 +510,28 @@ jobs:
 
           # Bootstrap sequence. Priority:
           #   1. Project-provided .slsa-autotools/build-hook.sh.
-          #   2. ./autogen.sh or ./bootstrap if present, ALWAYS
-          #      followed by autoreconf -fi unconditionally — even
-          #      when autogen produced configure successfully. This
-          #      is what guarantees the trace observes the autotools
-          #      toolchain (autoconf, automake, libtoolize, m4) and
-          #      pins it in the emitted Dockerfile. Otherwise a
-          #      project that ships pre-generated Makefile.in (e.g.
-          #      libpng) sends autogen.sh down its mode=configure
-          #      branch which refuses to regenerate, autoreconf
-          #      never runs during scan, and the builder image ends
-          #      up missing autoreconf — release-time bootstrap
-          #      then fails the moment any rebuild rule fires.
-          #      autoreconf -fi is idempotent; rerunning it after a
-          #      successful autogen costs only the trace coverage
-          #      we wanted in the first place.
+          #   2. ./autogen.sh or ./bootstrap if present. The || form
+          #      runs autoreconf -fi only when autogen exits non-zero
+          #      — covers libpng (autogen mode=configure refuses,
+          #      exits 1) and libsodium (autogen exits with getopt
+          #      usage), without redundantly running autoreconf when
+          #      autogen succeeded. The redundant run was harmful for
+          #      the GnuPG family: autoreconf invokes automake
+          #      --add-missing --copy which overwrites the project's
+          #      vendored po/Makefile.in.in with automake's bundled
+          #      (older) version, breaking gettext infrastructure
+          #      version match against the project's m4/po.m4 macros.
+          #      Trace coverage of autotools binaries is preserved:
+          #      either autogen runs them (exit 0 path) or autoreconf
+          #      does (exit non-zero path). One side of the || always
+          #      fires and feeds the strace.
           #   3. Plain autoreconf -fi against configure.ac.
           if [ -x .slsa-autotools/build-hook.sh ]; then
             BUILD_CMD='./.slsa-autotools/build-hook.sh'
           elif [ -x autogen.sh ]; then
-            BUILD_CMD='./autogen.sh; autoreconf -fi; ./configure --quiet && make -s dist GITLOG_TO_CHANGELOG=true'
+            BUILD_CMD='./autogen.sh || autoreconf -fi; ./configure --quiet && make -s dist GITLOG_TO_CHANGELOG=true'
           elif [ -x bootstrap ]; then
-            BUILD_CMD='./bootstrap; autoreconf -fi; ./configure --quiet && make -s dist GITLOG_TO_CHANGELOG=true'
+            BUILD_CMD='./bootstrap || autoreconf -fi; ./configure --quiet && make -s dist GITLOG_TO_CHANGELOG=true'
           elif [ -f configure.ac ] || [ -f configure.in ]; then
             BUILD_CMD='autoreconf -fi && ./configure --quiet && make -s dist GITLOG_TO_CHANGELOG=true'
           else
