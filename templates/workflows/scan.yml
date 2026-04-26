@@ -461,6 +461,7 @@ jobs:
             bsdextrautils \
             texinfo \
             help2man \
+            fig2dev \
             libc6-dev \
             zlib1g-dev \
             libbz2-dev \
