@@ -61,11 +61,241 @@ on:
 permissions: {}
 
 jobs:
+  # Step 1: pick the Ubuntu base release that satisfies every
+  # configure.ac dep declaration. Runs on a bare runner because the
+  # scan container itself is the thing being chosen — can't choose
+  # your own image from inside it. Outputs feed into the scan job.
+  resolve:
+    name: Resolve target Ubuntu base from configure.ac
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      release: ${{ steps.pick.outputs.release }}
+      image_digest: ${{ steps.digest.outputs.digest }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install resolver tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            apt-file devscripts wget dpkg-dev gawk
+          sudo apt-file update
+
+      - name: Pick base release from configure.ac
+        id: pick
+        # Inline resolver. Parses configure.ac for AM_PATH_<NAME>
+        # and PKG_CHECK_MODULES, maps each declared dep to its apt
+        # -dev package via apt-file, queries rmadison for version
+        # availability per Ubuntu release, intersects, picks the
+        # newest LTS that satisfies (falling back to newest non-LTS
+        # if no LTS works). Emits a structured conflict diagnostic
+        # if no release covers all deps.
+        #
+        # Candidate release set is intentionally hardcoded — adding a
+        # new Ubuntu release is a one-line change and guarantees a
+        # human reviewed it before scans start picking it.
+        run: |
+          set -euo pipefail
+          cat > /tmp/pick-base.sh <<'PICK_BASE_EOF'
+          #!/bin/bash
+          set -euo pipefail
+          CONFIGURE_AC="${1:-configure.ac}"
+          [ -f "$CONFIGURE_AC" ] || { echo "ERROR: $CONFIGURE_AC not found" >&2; exit 2; }
+
+          # LTS first (newest → oldest), then non-LTS (newest → oldest).
+          LTS=(resolute noble jammy focal)
+          NONLTS=(questing plucky oracular)
+          RELEASE_ORDER=("${LTS[@]}" "${NONLTS[@]}")
+
+          log()  { printf '==> %s\n' "$*" >&2; }
+          warn() { printf '!!  %s\n' "$*" >&2; }
+
+          # Build shell-var lookup for NEED_X_VERSION=1.56 patterns.
+          declare -A SHELL_VARS=()
+          while IFS='=' read -r key val; do
+            if [[ "$key" =~ ^[A-Z_][A-Z_0-9]*$ ]] && [[ "$val" =~ ^[0-9.]+$ ]]; then
+              SHELL_VARS["$key"]="$val"
+            fi
+          done < <(grep -E '^[A-Z_][A-Z_0-9]*=[0-9.]+' "$CONFIGURE_AC" 2>/dev/null || true)
+
+          declare -a DEPS=()
+
+          # AM_PATH_<NAME>(version) → m4 file → -dev package
+          while IFS= read -r match; do
+            lineno=${match%%:*}
+            body=${match#*:}
+            macro=$(echo "$body" | grep -oE 'AM_PATH_[A-Z_0-9]+' | head -1)
+            case "$macro" in
+              ""|AM_PATH_PROG|AM_PATH_PROGS) continue ;;
+            esac
+            arg=$(echo "$body" | sed -E "s/.*${macro}\(\\s*\"?\\\$?\\{?([^\"\\),\\s\\}]+)\\}?\"?.*/\\1/")
+            ver=""
+            if [[ "$arg" =~ ^[0-9.]+$ ]]; then
+              ver="$arg"
+            elif [[ "$arg" =~ ^[A-Z_][A-Z_0-9]*$ ]] && [[ -n "${SHELL_VARS[$arg]:-}" ]]; then
+              ver="${SHELL_VARS[$arg]}"
+            fi
+            m4_name=$(echo "${macro#AM_PATH_}" | tr '[:upper:]_' '[:lower:]-').m4
+            pkg=$(apt-file search "/usr/share/aclocal/${m4_name}" 2>/dev/null \
+              | awk -F: '/-dev:/{print $1; exit}')
+            if [ -n "$pkg" ]; then
+              DEPS+=("${pkg}|${ver}|${CONFIGURE_AC}:${lineno} ${macro}")
+            else
+              warn "could not resolve ${macro} → no -dev package ships ${m4_name}"
+            fi
+          done < <(grep -nE 'AM_PATH_[A-Z_][A-Z_0-9]*' "$CONFIGURE_AC")
+
+          # PKG_CHECK_MODULES(VAR, [name >= ver]) → .pc file → -dev
+          while IFS= read -r match; do
+            lineno=${match%%:*}
+            body=${match#*:}
+            spec=$(echo "$body" | sed -E 's/.*PKG_CHECK_MODULES\([^,]+,\s*\[?([^,\])]+).*/\1/')
+            name=$(echo "$spec" | awk '{print $1}')
+            ver=$(echo "$spec" | grep -oE '[0-9][0-9.]*' | head -1 || true)
+            pkg=$(apt-file search "/${name}.pc" 2>/dev/null \
+              | awk -F: '/-dev:/{print $1; exit}')
+            if [ -n "$pkg" ]; then
+              DEPS+=("${pkg}|${ver}|${CONFIGURE_AC}:${lineno} PKG_CHECK_MODULES($name)")
+            fi
+          done < <(grep -nE 'PKG_CHECK_MODULES' "$CONFIGURE_AC" 2>/dev/null || true)
+
+          if [ ${#DEPS[@]} -eq 0 ]; then
+            log "no dep declarations in $CONFIGURE_AC; defaulting to newest LTS (${LTS[0]})"
+            echo "${LTS[0]}"
+            exit 0
+          fi
+
+          log "extracted ${#DEPS[@]} dep declarations:"
+          for d in "${DEPS[@]}"; do log "  $d"; done
+
+          declare -A SATISFY=()
+          for dep in "${DEPS[@]}"; do
+            pkg=$(cut -d'|' -f1 <<<"$dep")
+            min_ver=$(cut -d'|' -f2 <<<"$dep")
+            while IFS= read -r line; do
+              release=$(awk -F'|' '{gsub(/ /,"",$3); print $3}' <<<"$line")
+              version=$(awk -F'|' '{gsub(/ /,"",$2); print $2}' <<<"$line")
+              release=${release%%/*}
+              case "$release" in *-*) continue ;; esac
+              in_candidate=false
+              for r in "${RELEASE_ORDER[@]}"; do
+                [ "$r" = "$release" ] && { in_candidate=true; break; }
+              done
+              [ "$in_candidate" = true ] || continue
+              clean=$(sed -E 's/-.*//' <<<"$version")
+              if [ -z "$min_ver" ] || dpkg --compare-versions "$clean" ge "$min_ver"; then
+                SATISFY["$pkg"]+=" $release"
+              fi
+            done < <(rmadison -u ubuntu "$pkg" 2>/dev/null || true)
+          done
+
+          INTERSECTION=("${RELEASE_ORDER[@]}")
+          for dep in "${DEPS[@]}"; do
+            pkg=$(cut -d'|' -f1 <<<"$dep")
+            releases=" ${SATISFY[$pkg]:-} "
+            NEW=()
+            for r in "${INTERSECTION[@]}"; do
+              [[ "$releases" == *" $r "* ]] && NEW+=("$r")
+            done
+            INTERSECTION=("${NEW[@]:-}")
+          done
+
+          if [ ${#INTERSECTION[@]} -gt 0 ] && [ -n "${INTERSECTION[0]:-}" ]; then
+            for r in "${RELEASE_ORDER[@]}"; do
+              for cand in "${INTERSECTION[@]}"; do
+                if [ "$r" = "$cand" ]; then
+                  log "satisfying releases: ${INTERSECTION[*]}"
+                  log "picked: $r"
+                  echo "$r"
+                  exit 0
+                fi
+              done
+            done
+          fi
+
+          {
+            echo
+            echo "ERROR: no single Ubuntu release satisfies all dependencies."
+            echo
+            echo "Dependencies (extracted from $CONFIGURE_AC):"
+            for d in "${DEPS[@]}"; do
+              pkg=$(cut -d'|' -f1 <<<"$d"); ver=$(cut -d'|' -f2 <<<"$d"); src=$(cut -d'|' -f3 <<<"$d")
+              if [ -n "$ver" ]; then
+                printf "  %-30s >= %-10s %s\n" "$pkg" "$ver" "$src"
+              else
+                printf "  %-30s (any)        %s\n" "$pkg" "$src"
+              fi
+            done
+            echo
+            echo "Per-dep release availability:"
+            for dep in "${DEPS[@]}"; do
+              pkg=$(cut -d'|' -f1 <<<"$dep")
+              sat="${SATISFY[$pkg]:-}"
+              [ -z "$sat" ] && sat=" (none in candidate set)"
+              printf "  %-30s satisfies on:%s\n" "$pkg" "$sat"
+            done
+            echo
+            echo "Image groupings (each covers a disjoint subset):"
+            unset GROUPS
+            declare -A GROUPS=()
+            for dep in "${DEPS[@]}"; do
+              pkg=$(cut -d'|' -f1 <<<"$dep")
+              sat="${SATISFY[$pkg]:-}"
+              [ -z "$sat" ] && continue
+              chosen=""
+              for r in "${RELEASE_ORDER[@]}"; do
+                [[ " $sat " == *" $r "* ]] && { chosen="$r"; break; }
+              done
+              [ -n "$chosen" ] && GROUPS["$chosen"]+=" $pkg"
+            done
+            for img in "${!GROUPS[@]}"; do
+              printf "  ubuntu:%s → %s\n" "$img" "${GROUPS[$img]}"
+            done
+            echo
+            echo "Resolution paths:"
+            echo "  - relax a version constraint in $CONFIGURE_AC"
+            echo "  - drop the conflicting dep"
+            echo "  - build the conflicting dep from source via project-chain (not yet implemented)"
+            echo
+            echo "Per slsa-autotools design, mixing apt sources across releases is not supported (ABI safety)."
+          } >&2
+          exit 1
+          PICK_BASE_EOF
+          chmod +x /tmp/pick-base.sh
+          RELEASE=$(/tmp/pick-base.sh configure.ac)
+          echo "release=${RELEASE}" >> "$GITHUB_OUTPUT"
+          echo "Picked Ubuntu release: ${RELEASE}"
+
+      - name: Resolve image digest for picked release
+        id: digest
+        # docker pull + inspect is the simplest stable way to turn a
+        # tag (ubuntu:resolute) into a digest (sha256:...) without
+        # registry-auth gymnastics. Pin via digest in the scan
+        # container's image: field below — tag-only would let the
+        # image silently drift between resolve and scan.
+        run: |
+          set -euo pipefail
+          docker pull "ubuntu:${{ steps.pick.outputs.release }}" >/dev/null
+          DIGEST=$(docker inspect \
+            --format='{{index .RepoDigests 0}}' \
+            "ubuntu:${{ steps.pick.outputs.release }}" \
+            | sed 's/.*@//')
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "Image digest: ${DIGEST}"
+
   scan:
     name: Trace build and emit pinned Dockerfile
+    needs: resolve
     runs-on: ubuntu-24.04
     container:
-      image: ubuntu@sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b
+      image: ubuntu@${{ needs.resolve.outputs.image_digest }}
     defaults:
       run:
         shell: bash
@@ -87,9 +317,15 @@ jobs:
       # The snapshot timestamp controls which version of every
       # package enters the Dockerfile. Bump this to pick up
       # security updates or newer toolchain; the emitted
-      # Dockerfile's pins will follow. Default here is kept in
-      # lockstep with the sibling xz reference project.
-      SNAPSHOT_TS: ${{ inputs.snapshot_ts != '' && inputs.snapshot_ts || '20260422T180000Z' }}
+      # Dockerfile's pins will follow.
+      SNAPSHOT_TS: ${{ inputs.snapshot_ts != '' && inputs.snapshot_ts || '20260425T120000Z' }}
+      # The Ubuntu release codename (resolute / noble / jammy / …)
+      # picked by the resolve job from configure.ac dep analysis.
+      # Used in the apt sources.list pinning below and threaded into
+      # the emitted Dockerfile so build-container.yml builds against
+      # the same release.
+      RELEASE: ${{ needs.resolve.outputs.release }}
+      IMAGE_DIGEST: ${{ needs.resolve.outputs.image_digest }}
 
     steps:
       - name: Bootstrap git (pre-checkout)
@@ -121,9 +357,9 @@ jobs:
           apt-get install -y --no-install-recommends ca-certificates
           # Swap to the pinned snapshot.
           cat > /etc/apt/sources.list <<APT
-          deb https://snapshot.ubuntu.com/ubuntu/${SNAPSHOT_TS}/ noble main restricted universe multiverse
-          deb https://snapshot.ubuntu.com/ubuntu/${SNAPSHOT_TS}/ noble-updates main restricted universe multiverse
-          deb https://snapshot.ubuntu.com/ubuntu/${SNAPSHOT_TS}/ noble-security main restricted universe multiverse
+          deb https://snapshot.ubuntu.com/ubuntu/${SNAPSHOT_TS}/ ${RELEASE} main restricted universe multiverse
+          deb https://snapshot.ubuntu.com/ubuntu/${SNAPSHOT_TS}/ ${RELEASE}-updates main restricted universe multiverse
+          deb https://snapshot.ubuntu.com/ubuntu/${SNAPSHOT_TS}/ ${RELEASE}-security main restricted universe multiverse
           APT
           rm -f /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list
           apt-get update -qq
@@ -513,7 +749,7 @@ jobs:
             echo "# overwrite. Editing individual SHA256 values is safe — the"
             echo "# verification step is purely local to this file."
             echo ""
-            echo "FROM ubuntu@sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b"
+            echo "FROM ubuntu@${IMAGE_DIGEST}"
             echo ""
             echo "ENV DEBIAN_FRONTEND=noninteractive"
             echo ""
@@ -526,9 +762,9 @@ jobs:
             echo "# apt traffic is immutable indefinitely."
             echo "RUN set -eu \\"
             echo " && printf '%s\\n' \\"
-            echo "    'deb https://snapshot.ubuntu.com/ubuntu/${SNAPSHOT_TS}/ noble main restricted universe multiverse' \\"
-            echo "    'deb https://snapshot.ubuntu.com/ubuntu/${SNAPSHOT_TS}/ noble-updates main restricted universe multiverse' \\"
-            echo "    'deb https://snapshot.ubuntu.com/ubuntu/${SNAPSHOT_TS}/ noble-security main restricted universe multiverse' \\"
+            echo "    'deb https://snapshot.ubuntu.com/ubuntu/${SNAPSHOT_TS}/ ${RELEASE} main restricted universe multiverse' \\"
+            echo "    'deb https://snapshot.ubuntu.com/ubuntu/${SNAPSHOT_TS}/ ${RELEASE}-updates main restricted universe multiverse' \\"
+            echo "    'deb https://snapshot.ubuntu.com/ubuntu/${SNAPSHOT_TS}/ ${RELEASE}-security main restricted universe multiverse' \\"
             echo "    > /etc/apt/sources.list \\"
             echo " && rm -f /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list \\"
             echo " && apt-get update -qq"
