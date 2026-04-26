@@ -513,7 +513,10 @@ jobs:
           mkdir -p /tmp/scan
 
           # Bootstrap sequence. Priority:
-          #   1. Project-provided .slsa-autotools/build-hook.sh.
+          #   1. Project-provided .slsa-autotools/build-hook.sh — runs
+          #      in place of the autogen/bootstrap step only; the
+          #      configure + make dist tail still runs after, matching
+          #      release.yml's "build-hook is bootstrap-only" contract.
           #   2. ./autogen.sh or ./bootstrap if present. The || form
           #      runs autoreconf -fi only when autogen exits non-zero
           #      — covers libpng (autogen mode=configure refuses,
@@ -530,14 +533,21 @@ jobs:
           #      does (exit non-zero path). One side of the || always
           #      fires and feeds the strace.
           #   3. Plain autoreconf -fi against configure.ac.
+          #
+          # FORCE_UNSAFE_CONFIGURE=1: coreutils' configure refuses to
+          # run as root unless this is set. Container jobs run as root
+          # by default. Other projects ignore the variable, so setting
+          # it universally is zero-cost noise rather than a per-project
+          # hook.
+          DIST_TAIL='FORCE_UNSAFE_CONFIGURE=1 ./configure --quiet && make -s dist GITLOG_TO_CHANGELOG=true'
           if [ -x .slsa-autotools/build-hook.sh ]; then
-            BUILD_CMD='./.slsa-autotools/build-hook.sh'
+            BUILD_CMD="./.slsa-autotools/build-hook.sh && ${DIST_TAIL}"
           elif [ -x autogen.sh ]; then
-            BUILD_CMD='./autogen.sh || autoreconf -fi; ./configure --quiet && make -s dist GITLOG_TO_CHANGELOG=true'
+            BUILD_CMD="./autogen.sh || autoreconf -fi; ${DIST_TAIL}"
           elif [ -x bootstrap ]; then
-            BUILD_CMD='./bootstrap || autoreconf -fi; ./configure --quiet && make -s dist GITLOG_TO_CHANGELOG=true'
+            BUILD_CMD="./bootstrap || autoreconf -fi; ${DIST_TAIL}"
           elif [ -f configure.ac ] || [ -f configure.in ]; then
-            BUILD_CMD='autoreconf -fi && ./configure --quiet && make -s dist GITLOG_TO_CHANGELOG=true'
+            BUILD_CMD="autoreconf -fi && ${DIST_TAIL}"
           else
             echo "ERROR: no recognizable autotools bootstrap found."
             echo "Expected one of: .slsa-autotools/build-hook.sh, autogen.sh,"
