@@ -673,9 +673,12 @@ jobs:
 
           # Expand to the full transitive dependency closure. Our
           # trace only captures files the build actually opens, but
-          # the produced Dockerfile uses dpkg -i, which refuses to
-          # configure a package unless its Depends and Pre-Depends
-          # are satisfied. Runtime libs loaded via ld-linux often
+          # the produced Dockerfile installs the pinned .deb set via
+          # apt-get install ./*.deb, which still requires every
+          # transitive Depends and Pre-Depends to be present in the
+          # local set (apt resolves install order but won't pull
+          # extra packages from the network — we deleted the apt
+          # sources after pinning). Runtime libs loaded via ld-linux often
           # don't appear in strace (libisl, libmpfr, libmpc for
           # cpp-13; binutils-common for binutils; etc.) — apt knows
           # about them because they're declared in control files.
@@ -850,7 +853,7 @@ jobs:
 
             echo "    > SHA256SUMS \\"
             echo " && sha256sum -c SHA256SUMS \\"
-            echo " && dpkg -i *.deb \\"
+            echo " && apt-get install -y --no-install-recommends ./*.deb \\"
             echo " && cd / && rm -rf /tmp/debs \\"
             echo " && apt-get clean \\"
             echo " && rm -rf /var/lib/apt/lists/*"
