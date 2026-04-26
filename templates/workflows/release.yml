@@ -157,6 +157,11 @@ jobs:
         # Projects with non-standard test invocations can override
         # with .slsa-autotools/test-hook.sh. Default is the
         # autotools-canonical `make check`.
+        env:
+          # coreutils' configure refuses to run as root unless this is
+          # set. Container jobs run as root. Other projects ignore the
+          # variable; zero-cost universal.
+          FORCE_UNSAFE_CONFIGURE: '1'
         run: |
           set -euo pipefail
           ./configure --quiet --enable-maintainer-mode
@@ -246,6 +251,10 @@ jobs:
         env:
           TAR_OPTIONS: '--owner=0 --group=0 --numeric-owner --mode=u+rw,go+r-w --sort=name --clamp-mtime --mtime=@${{ steps.meta.outputs.sde }}'
           LC_COLLATE: 'C'
+          # coreutils' configure refuses to run as root unless this is
+          # set. Container jobs run as root. Other projects ignore the
+          # variable; zero-cost universal.
+          FORCE_UNSAFE_CONFIGURE: '1'
         run: |
           set -euo pipefail
           mkdir build
@@ -395,6 +404,10 @@ jobs:
         env:
           TAR_OPTIONS: '--owner=0 --group=0 --numeric-owner --mode=u+rw,go+r-w --sort=name --clamp-mtime --mtime=@${{ steps.meta.outputs.sde }}'
           LC_COLLATE: 'C'
+          # coreutils' configure refuses to run as root unless this is
+          # set. Container jobs run as root. Other projects ignore the
+          # variable; zero-cost universal.
+          FORCE_UNSAFE_CONFIGURE: '1'
         run: |
           set -euo pipefail
           mkdir build
@@ -734,6 +747,10 @@ jobs:
         env:
           TAR_OPTIONS: '--owner=0 --group=0 --numeric-owner --mode=u+rw,go+r-w --sort=name --clamp-mtime --mtime=@${{ steps.meta.outputs.sde }}'
           LC_COLLATE: 'C'
+          # coreutils' configure refuses to run as root unless this is
+          # set. Container jobs run as root. Other projects ignore the
+          # variable; zero-cost universal.
+          FORCE_UNSAFE_CONFIGURE: '1'
         run: |
           set -euo pipefail
           WINDOWS_CMD='${{ steps.windows.outputs.cmd }}'
@@ -892,6 +909,10 @@ jobs:
         env:
           TAR_OPTIONS: '--owner=0 --group=0 --numeric-owner --mode=u+rw,go+r-w --sort=name --clamp-mtime --mtime=@${{ steps.meta.outputs.sde }}'
           LC_COLLATE: 'C'
+          # coreutils' configure refuses to run as root unless this is
+          # set. Container jobs run as root. Other projects ignore the
+          # variable; zero-cost universal.
+          FORCE_UNSAFE_CONFIGURE: '1'
         run: |
           set -euo pipefail
           WINDOWS_CMD='${{ steps.windows.outputs.cmd }}'
