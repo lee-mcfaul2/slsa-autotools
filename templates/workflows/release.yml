@@ -159,7 +159,7 @@ jobs:
         # autotools-canonical `make check`.
         run: |
           set -euo pipefail
-          ./configure --quiet
+          ./configure --quiet --enable-maintainer-mode
           make -s
           if [ -x .slsa-autotools/test-hook.sh ]; then
             ./.slsa-autotools/test-hook.sh
@@ -250,7 +250,7 @@ jobs:
           set -euo pipefail
           mkdir build
           cd build
-          ../configure --quiet
+          ../configure --quiet --enable-maintainer-mode
           make -s distdir GITLOG_TO_CHANGELOG=true
           # Find the distdir by reading PACKAGE and VERSION from
           # the generated Makefile (automake emits these as make
@@ -399,7 +399,7 @@ jobs:
           set -euo pipefail
           mkdir build
           cd build
-          ../configure --quiet
+          ../configure --quiet --enable-maintainer-mode
           make -s distdir GITLOG_TO_CHANGELOG=true
           PACKAGE=$(awk -F' *= *' '$1 == "PACKAGE" {print $2; exit}' Makefile)
           VERSION=$(awk -F' *= *' '$1 == "VERSION" {print $2; exit}' Makefile)
@@ -739,7 +739,7 @@ jobs:
           WINDOWS_CMD='${{ steps.windows.outputs.cmd }}'
           mkdir build
           cd build
-          ../configure --quiet
+          ../configure --quiet --enable-maintainer-mode
           make -s distdir GITLOG_TO_CHANGELOG=true
           PACKAGE=$(awk -F' *= *' '$1 == "PACKAGE" {print $2; exit}' Makefile)
           VERSION=$(awk -F' *= *' '$1 == "VERSION" {print $2; exit}' Makefile)
@@ -897,7 +897,7 @@ jobs:
           WINDOWS_CMD='${{ steps.windows.outputs.cmd }}'
           mkdir build
           cd build
-          ../configure --quiet
+          ../configure --quiet --enable-maintainer-mode
           make -s distdir GITLOG_TO_CHANGELOG=true
           PACKAGE=$(awk -F' *= *' '$1 == "PACKAGE" {print $2; exit}' Makefile)
           VERSION=$(awk -F' *= *' '$1 == "VERSION" {print $2; exit}' Makefile)
