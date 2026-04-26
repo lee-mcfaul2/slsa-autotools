@@ -497,11 +497,11 @@ jobs:
           if [ -x .slsa-autotools/build-hook.sh ]; then
             BUILD_CMD='./.slsa-autotools/build-hook.sh'
           elif [ -x autogen.sh ]; then
-            BUILD_CMD='./autogen.sh; autoreconf -fi; ./configure --quiet && make -s dist'
+            BUILD_CMD='./autogen.sh; autoreconf -fi; ./configure --quiet && make -s dist GITLOG_TO_CHANGELOG=true'
           elif [ -x bootstrap ]; then
-            BUILD_CMD='./bootstrap; autoreconf -fi; ./configure --quiet && make -s dist'
+            BUILD_CMD='./bootstrap; autoreconf -fi; ./configure --quiet && make -s dist GITLOG_TO_CHANGELOG=true'
           elif [ -f configure.ac ] || [ -f configure.in ]; then
-            BUILD_CMD='autoreconf -fi && ./configure --quiet && make -s dist'
+            BUILD_CMD='autoreconf -fi && ./configure --quiet && make -s dist GITLOG_TO_CHANGELOG=true'
           else
             echo "ERROR: no recognizable autotools bootstrap found."
             echo "Expected one of: .slsa-autotools/build-hook.sh, autogen.sh,"
