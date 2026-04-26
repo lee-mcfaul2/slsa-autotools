@@ -890,9 +890,13 @@ jobs:
             exit 0
           fi
 
+          # Body lines kept under 72 chars per project commit-msg
+          # hooks (libgpg-error's build-aux/git-hooks/commit-msg
+          # rejects longer lines once installed by autogen.sh).
           git commit \
             -m 'Regenerate Dockerfile via slsa-autotools scan' \
-            -m "Pinned to snapshot.ubuntu.com at ${SNAPSHOT_TS}. Every package pinned by version and SHA256."
+            -m "Pinned to snapshot.ubuntu.com at ${SNAPSHOT_TS}." \
+            -m 'Every package pinned by version and SHA256.'
           # Fully qualified target ref — actions/checkout always
           # detaches HEAD, so a bare `git push origin HEAD` has no
           # branch name to map to on the remote.
