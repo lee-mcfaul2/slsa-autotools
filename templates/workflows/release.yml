@@ -129,27 +129,25 @@ jobs:
         run: |
           set -euo pipefail
           # Bootstrap precedence: project hook > autogen.sh >
-          # bootstrap > bare autoreconf. Every non-hook branch ends
-          # with autoreconf -fi UNCONDITIONALLY, even when autogen
-          # produced ./configure or one already shipped in tree.
-          # The shipped Makefile.in's automake rebuild rules pin a
-          # specific automake API version (gnu-hello shipped 1.15
-          # rules, libpng shipped 1.18.1 rules; the builder image
-          # has 1.16). Any mtime-driven aclocal.m4 regeneration
-          # would then call a missing aclocal-X.Y and exit 127.
-          # autoreconf -fi rewrites Makefile.in against the builder
-          # image's automake, so the runtime rebuild rules match
-          # what's actually installed. Matches scan.yml's BUILD_CMD
-          # — both flows regenerate against the same toolchain so
-          # scan's pinned Dockerfile reflects what release runs.
+          # bootstrap > bare autoreconf. The || form runs autoreconf
+          # only when autogen / bootstrap exited non-zero — covers
+          # libpng (autogen mode=configure refuses, exits 1) and
+          # libsodium (autogen exits with getopt usage). Running
+          # autoreconf redundantly after a successful autogen breaks
+          # the GnuPG family because automake --add-missing --copy
+          # overwrites the project's vendored po/Makefile.in.in with
+          # automake's bundled (older) version, mismatching the
+          # project's own m4 macros. The bare-configure.ac branch
+          # always autoreconfs since there's no autogen to handle
+          # the regeneration. Matches scan.yml's BUILD_CMD — both
+          # flows produce the same bootstrap output, and scan's
+          # pinned toolchain reflects what release actually runs.
           if [ -x .slsa-autotools/build-hook.sh ]; then
             ./.slsa-autotools/build-hook.sh
           elif [ -x autogen.sh ]; then
-            ./autogen.sh || true
-            autoreconf -fi
+            ./autogen.sh || autoreconf -fi
           elif [ -x bootstrap ]; then
-            ./bootstrap || true
-            autoreconf -fi
+            ./bootstrap || autoreconf -fi
           elif [ -f configure.ac ] || [ -f configure.in ]; then
             autoreconf -fi
           fi
@@ -220,27 +218,25 @@ jobs:
         run: |
           set -euo pipefail
           # Bootstrap precedence: project hook > autogen.sh >
-          # bootstrap > bare autoreconf. Every non-hook branch ends
-          # with autoreconf -fi UNCONDITIONALLY, even when autogen
-          # produced ./configure or one already shipped in tree.
-          # The shipped Makefile.in's automake rebuild rules pin a
-          # specific automake API version (gnu-hello shipped 1.15
-          # rules, libpng shipped 1.18.1 rules; the builder image
-          # has 1.16). Any mtime-driven aclocal.m4 regeneration
-          # would then call a missing aclocal-X.Y and exit 127.
-          # autoreconf -fi rewrites Makefile.in against the builder
-          # image's automake, so the runtime rebuild rules match
-          # what's actually installed. Matches scan.yml's BUILD_CMD
-          # — both flows regenerate against the same toolchain so
-          # scan's pinned Dockerfile reflects what release runs.
+          # bootstrap > bare autoreconf. The || form runs autoreconf
+          # only when autogen / bootstrap exited non-zero — covers
+          # libpng (autogen mode=configure refuses, exits 1) and
+          # libsodium (autogen exits with getopt usage). Running
+          # autoreconf redundantly after a successful autogen breaks
+          # the GnuPG family because automake --add-missing --copy
+          # overwrites the project's vendored po/Makefile.in.in with
+          # automake's bundled (older) version, mismatching the
+          # project's own m4 macros. The bare-configure.ac branch
+          # always autoreconfs since there's no autogen to handle
+          # the regeneration. Matches scan.yml's BUILD_CMD — both
+          # flows produce the same bootstrap output, and scan's
+          # pinned toolchain reflects what release actually runs.
           if [ -x .slsa-autotools/build-hook.sh ]; then
             ./.slsa-autotools/build-hook.sh
           elif [ -x autogen.sh ]; then
-            ./autogen.sh || true
-            autoreconf -fi
+            ./autogen.sh || autoreconf -fi
           elif [ -x bootstrap ]; then
-            ./bootstrap || true
-            autoreconf -fi
+            ./bootstrap || autoreconf -fi
           elif [ -f configure.ac ] || [ -f configure.in ]; then
             autoreconf -fi
           fi
@@ -371,27 +367,25 @@ jobs:
         run: |
           set -euo pipefail
           # Bootstrap precedence: project hook > autogen.sh >
-          # bootstrap > bare autoreconf. Every non-hook branch ends
-          # with autoreconf -fi UNCONDITIONALLY, even when autogen
-          # produced ./configure or one already shipped in tree.
-          # The shipped Makefile.in's automake rebuild rules pin a
-          # specific automake API version (gnu-hello shipped 1.15
-          # rules, libpng shipped 1.18.1 rules; the builder image
-          # has 1.16). Any mtime-driven aclocal.m4 regeneration
-          # would then call a missing aclocal-X.Y and exit 127.
-          # autoreconf -fi rewrites Makefile.in against the builder
-          # image's automake, so the runtime rebuild rules match
-          # what's actually installed. Matches scan.yml's BUILD_CMD
-          # — both flows regenerate against the same toolchain so
-          # scan's pinned Dockerfile reflects what release runs.
+          # bootstrap > bare autoreconf. The || form runs autoreconf
+          # only when autogen / bootstrap exited non-zero — covers
+          # libpng (autogen mode=configure refuses, exits 1) and
+          # libsodium (autogen exits with getopt usage). Running
+          # autoreconf redundantly after a successful autogen breaks
+          # the GnuPG family because automake --add-missing --copy
+          # overwrites the project's vendored po/Makefile.in.in with
+          # automake's bundled (older) version, mismatching the
+          # project's own m4 macros. The bare-configure.ac branch
+          # always autoreconfs since there's no autogen to handle
+          # the regeneration. Matches scan.yml's BUILD_CMD — both
+          # flows produce the same bootstrap output, and scan's
+          # pinned toolchain reflects what release actually runs.
           if [ -x .slsa-autotools/build-hook.sh ]; then
             ./.slsa-autotools/build-hook.sh
           elif [ -x autogen.sh ]; then
-            ./autogen.sh || true
-            autoreconf -fi
+            ./autogen.sh || autoreconf -fi
           elif [ -x bootstrap ]; then
-            ./bootstrap || true
-            autoreconf -fi
+            ./bootstrap || autoreconf -fi
           elif [ -f configure.ac ] || [ -f configure.in ]; then
             autoreconf -fi
           fi
@@ -646,27 +640,25 @@ jobs:
         run: |
           set -euo pipefail
           # Bootstrap precedence: project hook > autogen.sh >
-          # bootstrap > bare autoreconf. Every non-hook branch ends
-          # with autoreconf -fi UNCONDITIONALLY, even when autogen
-          # produced ./configure or one already shipped in tree.
-          # The shipped Makefile.in's automake rebuild rules pin a
-          # specific automake API version (gnu-hello shipped 1.15
-          # rules, libpng shipped 1.18.1 rules; the builder image
-          # has 1.16). Any mtime-driven aclocal.m4 regeneration
-          # would then call a missing aclocal-X.Y and exit 127.
-          # autoreconf -fi rewrites Makefile.in against the builder
-          # image's automake, so the runtime rebuild rules match
-          # what's actually installed. Matches scan.yml's BUILD_CMD
-          # — both flows regenerate against the same toolchain so
-          # scan's pinned Dockerfile reflects what release runs.
+          # bootstrap > bare autoreconf. The || form runs autoreconf
+          # only when autogen / bootstrap exited non-zero — covers
+          # libpng (autogen mode=configure refuses, exits 1) and
+          # libsodium (autogen exits with getopt usage). Running
+          # autoreconf redundantly after a successful autogen breaks
+          # the GnuPG family because automake --add-missing --copy
+          # overwrites the project's vendored po/Makefile.in.in with
+          # automake's bundled (older) version, mismatching the
+          # project's own m4 macros. The bare-configure.ac branch
+          # always autoreconfs since there's no autogen to handle
+          # the regeneration. Matches scan.yml's BUILD_CMD — both
+          # flows produce the same bootstrap output, and scan's
+          # pinned toolchain reflects what release actually runs.
           if [ -x .slsa-autotools/build-hook.sh ]; then
             ./.slsa-autotools/build-hook.sh
           elif [ -x autogen.sh ]; then
-            ./autogen.sh || true
-            autoreconf -fi
+            ./autogen.sh || autoreconf -fi
           elif [ -x bootstrap ]; then
-            ./bootstrap || true
-            autoreconf -fi
+            ./bootstrap || autoreconf -fi
           elif [ -f configure.ac ] || [ -f configure.in ]; then
             autoreconf -fi
           fi
@@ -830,27 +822,25 @@ jobs:
         run: |
           set -euo pipefail
           # Bootstrap precedence: project hook > autogen.sh >
-          # bootstrap > bare autoreconf. Every non-hook branch ends
-          # with autoreconf -fi UNCONDITIONALLY, even when autogen
-          # produced ./configure or one already shipped in tree.
-          # The shipped Makefile.in's automake rebuild rules pin a
-          # specific automake API version (gnu-hello shipped 1.15
-          # rules, libpng shipped 1.18.1 rules; the builder image
-          # has 1.16). Any mtime-driven aclocal.m4 regeneration
-          # would then call a missing aclocal-X.Y and exit 127.
-          # autoreconf -fi rewrites Makefile.in against the builder
-          # image's automake, so the runtime rebuild rules match
-          # what's actually installed. Matches scan.yml's BUILD_CMD
-          # — both flows regenerate against the same toolchain so
-          # scan's pinned Dockerfile reflects what release runs.
+          # bootstrap > bare autoreconf. The || form runs autoreconf
+          # only when autogen / bootstrap exited non-zero — covers
+          # libpng (autogen mode=configure refuses, exits 1) and
+          # libsodium (autogen exits with getopt usage). Running
+          # autoreconf redundantly after a successful autogen breaks
+          # the GnuPG family because automake --add-missing --copy
+          # overwrites the project's vendored po/Makefile.in.in with
+          # automake's bundled (older) version, mismatching the
+          # project's own m4 macros. The bare-configure.ac branch
+          # always autoreconfs since there's no autogen to handle
+          # the regeneration. Matches scan.yml's BUILD_CMD — both
+          # flows produce the same bootstrap output, and scan's
+          # pinned toolchain reflects what release actually runs.
           if [ -x .slsa-autotools/build-hook.sh ]; then
             ./.slsa-autotools/build-hook.sh
           elif [ -x autogen.sh ]; then
-            ./autogen.sh || true
-            autoreconf -fi
+            ./autogen.sh || autoreconf -fi
           elif [ -x bootstrap ]; then
-            ./bootstrap || true
-            autoreconf -fi
+            ./bootstrap || autoreconf -fi
           elif [ -f configure.ac ] || [ -f configure.in ]; then
             autoreconf -fi
           fi
