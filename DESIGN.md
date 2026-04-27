@@ -63,6 +63,95 @@ pass on a standard runner.
   artefact; slsa-autotools does not try to replace that, it
   stacks alongside.
 
+## Linux binaries: AppImage only, no .deb / .rpm / bare-ELF
+
+slsa-autotools produces Linux binaries as AppImages via the same
+two-pass per-container architecture used for source tarballs and
+Windows binaries. It does **not** emit `.deb`, `.rpm`, Snap, Flatpak,
+or bare-ELF tarballs.
+
+This is a deliberate trade-off, parallel in shape to the Windows
+decision but with the answer flipped — Linux binary determinism is
+tractable, just only at one specific format level.
+
+1. **One build needs to work everywhere modern.** Bare ELF would
+   force adopters to ship one tarball per glibc / libstdc++ ABI
+   window — at minimum an "old enough" build for Debian-stable users
+   and a "new" build for rolling-release users. AppImage bundles its
+   library closure, so a single `*.AppImage` runs across most distros
+   from a build cut on a stable old base. One binary set, one
+   provenance attestation, one cosign signature.
+
+2. **Distro packaging means reproducing distro tooling.** A
+   reproducible `.deb` requires running `dpkg-deb` against a
+   particular Debian-policy-compliant tree, with that distro's
+   `dh_*` helpers in scope; `.rpm` requires `rpmbuild` and a spec
+   file. Each ties the pipeline to a specific distro's release
+   cadence and packaging conventions, which then have to be kept
+   in sync as the distro evolves. Distros already package
+   well-known autotools projects via their own infrastructure;
+   slsa-autotools does not try to compete with that — it stacks
+   alongside, the same way it does with MSVC for Windows.
+
+3. **The reproducibility surface is small and well-trodden.** An
+   AppImage is a fixed-bytes runtime stub concatenated with a
+   SquashFS payload. SquashFS has documented reproducible mode
+   (`-mkfs-time 0 -all-time 0 -no-exports -no-xattrs -all-root`,
+   plus `-reproducible` on newer versions). The ELF binaries inside
+   need `-Wl,--build-id=none` (or `=sha1` for content-derived) and
+   `-ffile-prefix-map=$DISTDIR_TOP=.` for DWARF stability — same
+   `SOURCE_DATE_EPOCH` story the source-tarball path already
+   handles. No equivalent of the PE `IMAGE_FILE_HEADER.TimeDateStamp`
+   / debug-directory / PDB-GUID maze that made MSVC untenable.
+
+### Wrappers
+
+Two PATH-shadowed wrappers, both constructed inline in the
+`build_appimage_pass*` jobs (mirroring how
+`build_windows_pass*` stages the mingw + 7z wrappers):
+
+- `/opt/wrappers/{gcc,g++,cc,c++}` — `exec` the real compiler with
+  `-ffile-prefix-map=${DISTDIR_TOP}=.` and `-Wl,--build-id=none`
+  prepended to the argument list. Project build script stays
+  unchanged upstream.
+- `/opt/wrappers/mksquashfs` — `exec /usr/bin/mksquashfs "$@"` with
+  the determinism flags **appended**. mksquashfs resolves duplicate
+  options last-wins, so appending lets our flags override anything
+  the calling AppImage builder passed. Means: any AppImage builder
+  that calls `mksquashfs` from PATH gets reproducible payloads
+  transparently — linuxdeploy, linuxdeployqt, appimagetool, and
+  appimage-builder all qualify.
+
+### What slsa-autotools does not pin
+
+The specific AppImage builder (linuxdeploy, linuxdeployqt,
+appimagetool standalone, appimage-builder, electron-builder, …) is
+the project's choice. The `.slsa-autotools/linux-hook.sh` adapter is
+where the project downloads its preferred builder by SHA256 and
+invokes it. Same model as `cosign` in the existing release.yml — the
+universal flow doesn't lock in a specific tool, but the hook is
+expected to pin whatever it pulls.
+
+This is also where the AppImage-builder tooling's own determinism
+holes get patched. linuxdeployqt's "continuous" tag floats; a
+pinning hook downloads it at a known SHA256 and rejects any other
+bytes. Same pattern for any tool that ships rolling releases.
+
+### What this means for adopters
+
+- **Projects that already ship an AppImage** (ImageMagick, GIMP,
+  KDE apps via linuxdeploy plugins) need a `linux-hook.sh` that
+  re-implements the existing AppImage build with SHA-pinned tooling.
+  Usually a 30–60 line script.
+- **Projects that ship bare ELF tarballs or distro packages** are
+  out of scope. Producing an AppImage from an autotools project that
+  has never had one is feasible but project-specific work; the
+  scaffolder doesn't generate one for you.
+- **Projects that don't ship Linux binaries at all** (most C
+  libraries — libsodium, libpng, libgcrypt) skip this path entirely.
+  No `linux-hook.sh`, the `build_appimage_pass*` jobs see the
+  `has_linux` gate as false and report skipped.
+
 ## Signing: sigstore only, no Notary interop
 
 slsa-autotools signs every released artefact with sigstore
