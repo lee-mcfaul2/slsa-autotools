@@ -515,7 +515,28 @@ jobs:
         # the emitted Dockerfile.
         run: |
           set -euo pipefail
-          apt-get install -y --no-install-recommends \
+          # snapshot.ubuntu.com is occasionally flaky during install
+          # (individual .deb fetches return 503 even after Acquire::
+          # Retries exhausts). Retry the whole install command up to
+          # 5 times with linear backoff, watching the log for any
+          # remaining "Failed to fetch" warnings.
+          apt_install() {
+            for attempt in 1 2 3 4 5; do
+              apt-get -o Acquire::Retries=5 -o Acquire::http::Pipeline-Depth=1 \
+                      install -y --no-install-recommends "$@" 2>&1 \
+                | tee /tmp/apt-install.log
+              if [ "${PIPESTATUS[0]}" = "0" ] && ! grep -q 'Failed to fetch' /tmp/apt-install.log; then
+                return 0
+              fi
+              if [ "${attempt}" = "5" ]; then
+                echo "ERROR: apt-get install kept failing across 5 attempts" >&2
+                grep -E '^E:|^W:' /tmp/apt-install.log >&2 || true
+                return 1
+              fi
+              sleep $((attempt * 10))
+            done
+          }
+          apt_install \
             build-essential \
             autoconf \
             automake \
@@ -563,7 +584,7 @@ jobs:
           # binaries. ghostscript is included because xz's build.bash
           # uses it to produce PDF manuals; harmless if not invoked.
           if [ "${{ steps.windows.outputs.detected }}" = 'true' ]; then
-            apt-get install -y --no-install-recommends \
+            apt_install \
               mingw-w64 \
               gcc-mingw-w64-i686 \
               gcc-mingw-w64-x86-64 \
@@ -582,7 +603,7 @@ jobs:
           # project's choice — its linux-hook.sh downloads it by SHA
           # at release time, mirroring how cosign is installed.
           if [ "${{ steps.linux.outputs.detected }}" = 'true' ]; then
-            apt-get install -y --no-install-recommends \
+            apt_install \
               squashfs-tools \
               patchelf \
               desktop-file-utils
@@ -599,8 +620,24 @@ jobs:
         if: needs.resolve.outputs.extra_packages != ''
         run: |
           set -euo pipefail
-          # shellcheck disable=SC2086
-          apt-get install -y --no-install-recommends ${{ needs.resolve.outputs.extra_packages }}
+          # Same snapshot.ubuntu.com transient-503 retry pattern as
+          # the bootstrap toolchain step.
+          for attempt in 1 2 3 4 5; do
+            # shellcheck disable=SC2086
+            apt-get -o Acquire::Retries=5 -o Acquire::http::Pipeline-Depth=1 \
+                    install -y --no-install-recommends \
+                    ${{ needs.resolve.outputs.extra_packages }} 2>&1 \
+              | tee /tmp/apt-extra.log
+            if [ "${PIPESTATUS[0]}" = "0" ] && ! grep -q 'Failed to fetch' /tmp/apt-extra.log; then
+              break
+            fi
+            if [ "${attempt}" = "5" ]; then
+              echo "ERROR: project apt deps install kept failing across 5 attempts" >&2
+              grep -E '^E:|^W:' /tmp/apt-extra.log >&2 || true
+              exit 1
+            fi
+            sleep $((attempt * 10))
+          done
 
       - name: Run project build under strace
         id: trace
