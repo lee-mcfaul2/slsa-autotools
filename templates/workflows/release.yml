@@ -1205,11 +1205,26 @@ jobs:
             echo "LDFLAGS=-Wl,--build-id=none ${LDFLAGS:-}"
           } >> "$GITHUB_ENV"
           mkdir -p /opt/wrappers
+          # Determinism flags worth always appending:
+          #   -no-exports  : suppress the NFS export table (variable
+          #                  bytes derived from the FS uuid)
+          #   -no-xattrs   : skip extended attributes (per-file
+          #                  variability)
+          #   -all-root    : force uid 0 / gid 0 on every entry
+          # NOT appended:
+          #   -mkfs-time / -all-time : recent mksquashfs versions
+          #     refuse to combine these with SOURCE_DATE_EPOCH and
+          #     fail "SOURCE_DATE_EPOCH and command line options
+          #     can't be used at the same time to set timestamp(s)".
+          #     SOURCE_DATE_EPOCH is the authoritative input: it's
+          #     already exported in this job from the tag commit's
+          #     timestamp, and AppImage builders (appimagetool,
+          #     linuxdeploy, appimage-builder) set it before invoking
+          #     mksquashfs anyway. mksquashfs reads it natively and
+          #     applies it as if -mkfs-time/-all-time were passed.
           cat > /opt/wrappers/mksquashfs <<'WRAP'
           #!/bin/sh
           exec /usr/bin/mksquashfs "$@" \
-            -mkfs-time 0 \
-            -all-time 0 \
             -no-exports \
             -no-xattrs \
             -all-root
@@ -1332,27 +1347,19 @@ jobs:
             exit 1
           fi
 
-      - name: Install reproducibility wrappers
+      - name: Install reproducibility wrapper and seed flags
+        # Mirror of build_appimage_pass1 — change in pairs.
         run: |
           set -euo pipefail
+          {
+            echo "CFLAGS=-ffile-prefix-map=${GITHUB_WORKSPACE}=. ${CFLAGS:-}"
+            echo "CXXFLAGS=-ffile-prefix-map=${GITHUB_WORKSPACE}=. ${CXXFLAGS:-}"
+            echo "LDFLAGS=-Wl,--build-id=none ${LDFLAGS:-}"
+          } >> "$GITHUB_ENV"
           mkdir -p /opt/wrappers
-          for CC in gcc g++ cc c++; do
-            REAL="/usr/bin/${CC}"
-            [ -x "${REAL}" ] || continue
-            cat > "/opt/wrappers/${CC}" <<WRAP
-          #!/bin/sh
-          exec ${REAL} \\
-            "-ffile-prefix-map=\${DISTDIR_TOP}=." \\
-            -Wl,--build-id=none \\
-            "\$@"
-          WRAP
-            chmod +x "/opt/wrappers/${CC}"
-          done
           cat > /opt/wrappers/mksquashfs <<'WRAP'
           #!/bin/sh
           exec /usr/bin/mksquashfs "$@" \
-            -mkfs-time 0 \
-            -all-time 0 \
             -no-exports \
             -no-xattrs \
             -all-root
