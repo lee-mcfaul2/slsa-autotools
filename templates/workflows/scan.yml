@@ -167,7 +167,14 @@ jobs:
           while IFS= read -r match; do
             lineno=${match%%:*}
             body=${match#*:}
-            spec=$(echo "$body" | sed -E 's/.*PKG_CHECK_MODULES\([^,]+,\s*\[?([^,\])]+).*/\1/')
+            # Negated class lists ] first so strict ERE parsers
+            # (GNU sed >= 4.9 on Ubuntu 24.04 runners) treat it as a
+            # literal class member rather than the class terminator.
+            # Older parsers were lenient about the [^,\]) form and
+            # silently accepted, so this only surfaced once a project
+            # (ImageMagick) had a PKG_CHECK_MODULES with the class
+            # boundary actually exercised.
+            spec=$(echo "$body" | sed -E 's/.*PKG_CHECK_MODULES\([^,]+,\s*\[?([^],)]+).*/\1/')
             name=$(echo "$spec" | awk '{print $1}')
             ver=$(echo "$spec" | grep -oE '[0-9][0-9.]*' | head -1 || true)
             pkg=$(apt-file search "/${name}.pc" 2>/dev/null \
