@@ -154,8 +154,11 @@ jobs:
               ver="${SHELL_VARS[$arg]}"
             fi
             m4_name=$(echo "${macro#AM_PATH_}" | tr '[:upper:]_' '[:lower:]-').m4
+            # || true: pipefail + set -e would abort the whole script
+            # if apt-file search returns non-zero on a no-match (which
+            # some apt-file versions do silently). Tolerate as empty.
             pkg=$(apt-file search "/usr/share/aclocal/${m4_name}" 2>/dev/null \
-              | awk -F: '/-dev:/{print $1; exit}')
+              | awk -F: '/-dev:/{print $1; exit}' || true)
             if [ -n "$pkg" ]; then
               DEPS+=("${pkg}|${ver}|${CONFIGURE_AC}:${lineno} ${macro}")
             else
@@ -177,8 +180,10 @@ jobs:
             spec=$(echo "$body" | sed -E 's/.*PKG_CHECK_MODULES\([^,]+,\s*\[?([^],)]+).*/\1/')
             name=$(echo "$spec" | awk '{print $1}')
             ver=$(echo "$spec" | grep -oE '[0-9][0-9.]*' | head -1 || true)
+            # || true: pipefail + set -e would abort if apt-file
+            # search returns non-zero on a no-match. Tolerate as empty.
             pkg=$(apt-file search "/${name}.pc" 2>/dev/null \
-              | awk -F: '/-dev:/{print $1; exit}')
+              | awk -F: '/-dev:/{print $1; exit}' || true)
             if [ -n "$pkg" ]; then
               DEPS+=("${pkg}|${ver}|${CONFIGURE_AC}:${lineno} PKG_CHECK_MODULES($name)")
             fi
