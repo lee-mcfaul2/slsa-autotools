@@ -413,7 +413,27 @@ jobs:
           deb https://snapshot.ubuntu.com/ubuntu/${SNAPSHOT_TS}/ ${RELEASE}-security main restricted universe multiverse
           APT
           rm -f /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list
-          apt-get update -qq
+          # snapshot.ubuntu.com occasionally returns 503 on individual
+          # Packages indexes during high traffic. apt-get update exits
+          # 0 with a "Failed to fetch" warning when this happens, then
+          # the subsequent install step explodes with "Unable to locate"
+          # for every package that lived in the missing index. Combine
+          # apt's per-fetch Acquire::Retries with an outer shell-level
+          # retry that re-runs update if any 'Failed to fetch' warning
+          # remains in the log.
+          for attempt in 1 2 3 4 5; do
+            apt-get -o Acquire::Retries=5 -o Acquire::http::Pipeline-Depth=1 \
+                    update 2>&1 | tee /tmp/apt-update.log
+            if ! grep -q 'Failed to fetch' /tmp/apt-update.log; then
+              break
+            fi
+            if [ "${attempt}" = "5" ]; then
+              echo "ERROR: apt-get update against snapshot.ubuntu.com kept failing across 5 attempts" >&2
+              grep '^W:' /tmp/apt-update.log >&2 || true
+              exit 1
+            fi
+            sleep $((attempt * 10))
+          done
 
       - name: Detect Windows build entry point
         # Universal detection, convention- and hook-driven:
