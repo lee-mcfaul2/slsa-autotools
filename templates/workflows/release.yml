@@ -1176,36 +1176,35 @@ jobs:
             exit 1
           fi
 
-      - name: Install reproducibility wrappers
-        # Universal for any native-Linux AppImage build:
-        #   (A) gcc / g++ / cc / c++ wrapper injects -ffile-prefix-map
-        #       so DWARF paths are stable across the two passes, and
-        #       -Wl,--build-id=none so the ELF .note.gnu.build-id
-        #       section doesn't carry run-to-run entropy. (PE's
-        #       --no-insert-timestamp doesn't apply to ELF, which has
-        #       no equivalent header timestamp.)
-        #   (B) mksquashfs wrapper appends reproducibility flags so
-        #       the SquashFS payload (the AppImage body) is byte-stable
-        #       regardless of how the calling AppImage builder invoked
-        #       it. mksquashfs resolves duplicate options last-wins, so
-        #       appending lets our flags override anything passed.
-        # PATH is then prefixed with /opt/wrappers so any invocation
-        # of gcc / mksquashfs picks up the wrappers transparently.
+      - name: Install reproducibility wrapper and seed flags
+        # Native gcc gets reproducibility flags via CFLAGS / CXXFLAGS /
+        # LDFLAGS in the environment, NOT via a PATH wrapper. Wrapping
+        # gcc/g++ here breaks libtool's CXX hardcode-probe — libtool
+        # invokes the compiler with internal queries during configure
+        # and the wrapper-injected linker flag confuses the parser,
+        # leaving hardcode_libdir_flag_spec_CXX="" and the subsequent
+        # CXXLD step erroring with "unsupported hardcode properties".
+        # The mingw cross path doesn't hit this because that libtool
+        # probe takes a different code path on no-shared-libs targets.
+        # Env vars sidestep the issue entirely:
+        #   - configure picks them up as user-supplied flags.
+        #   - libtool stores them and passes them through cleanly.
+        #   - Most autotools projects that override CFLAGS append to
+        #     the inherited value rather than replacing it; for the
+        #     few that don't, the hook can do `./configure
+        #     CFLAGS="$CFLAGS -O2"` explicitly.
+        # The mksquashfs wrapper still uses the PATH-shadow pattern
+        # because it has no env-var equivalent — it's a positional
+        # CLI tool. AppImage builders (linuxdeploy, appimagetool,
+        # appimage-builder, …) all invoke mksquashfs from PATH.
         run: |
           set -euo pipefail
+          {
+            echo "CFLAGS=-ffile-prefix-map=${GITHUB_WORKSPACE}=. ${CFLAGS:-}"
+            echo "CXXFLAGS=-ffile-prefix-map=${GITHUB_WORKSPACE}=. ${CXXFLAGS:-}"
+            echo "LDFLAGS=-Wl,--build-id=none ${LDFLAGS:-}"
+          } >> "$GITHUB_ENV"
           mkdir -p /opt/wrappers
-          for CC in gcc g++ cc c++; do
-            REAL="/usr/bin/${CC}"
-            [ -x "${REAL}" ] || continue
-            cat > "/opt/wrappers/${CC}" <<WRAP
-          #!/bin/sh
-          exec ${REAL} \\
-            "-ffile-prefix-map=\${DISTDIR_TOP}=." \\
-            -Wl,--build-id=none \\
-            "\$@"
-          WRAP
-            chmod +x "/opt/wrappers/${CC}"
-          done
           cat > /opt/wrappers/mksquashfs <<'WRAP'
           #!/bin/sh
           exec /usr/bin/mksquashfs "$@" \
@@ -1242,10 +1241,9 @@ jobs:
           find "${DISTDIR}" -type f \( -name '*.pot' -o -name '*.po' \) \
             -exec sed -i "s|^\"POT-Creation-Date: .*|\"POT-Creation-Date: ${FIXED_DATE}\\\\n\"|" {} + 2>/dev/null || true
           cd "${DISTDIR}"
-          # DISTDIR_TOP is what -ffile-prefix-map rewrites to "." in
-          # debug paths — must be exported before the build fires.
-          DISTDIR_TOP="$(pwd)"
-          export DISTDIR_TOP
+          # CFLAGS / CXXFLAGS / LDFLAGS already carry the
+          # reproducibility flags (set in the wrapper step's
+          # GITHUB_ENV writes); the hook's ./configure inherits them.
           bash -c "${LINUX_CMD}"
           # Collect AppImages the hook produced. Standard arch suffixes
           # are accepted; projects targeting one arch only ship one file.
