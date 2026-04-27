@@ -426,6 +426,35 @@ jobs:
             echo "No Windows build entry point detected."
           fi
 
+      - name: Detect Linux binary build entry point
+        # Hook-only — no convention path for AppImage. Multiple AppImage
+        # builders exist (linuxdeploy, appimagetool, appimage-builder,
+        # electron-builder) and projects pick whichever fits; the hook
+        # is the project's adapter. Same shape as windows-hook.sh.
+        # When detected, the bootstrap toolchain installs the universal
+        # AppImage build deps (squashfs-tools, patchelf, desktop-file-
+        # utils) and the trace step runs the linux build so any
+        # additional apt deps the hook touches land in the emitted
+        # Dockerfile.
+        id: linux
+        run: |
+          set -eu
+          if [ -x .slsa-autotools/linux-hook.sh ]; then
+            CMD="${GITHUB_WORKSPACE}/.slsa-autotools/linux-hook.sh"
+          elif [ -f .slsa-autotools/linux-hook.sh ]; then
+            CMD="bash ${GITHUB_WORKSPACE}/.slsa-autotools/linux-hook.sh"
+          else
+            CMD=''
+          fi
+          if [ -n "${CMD}" ]; then
+            echo "detected=true" >> "$GITHUB_OUTPUT"
+            echo "cmd=${CMD}"   >> "$GITHUB_OUTPUT"
+            echo "Linux binary build detected: ${CMD}"
+          else
+            echo "detected=false" >> "$GITHUB_OUTPUT"
+            echo "No Linux binary build entry point detected."
+          fi
+
       - name: Install bootstrap toolchain
         # A deliberately generous set of packages so most autotools
         # projects can actually run ./configure && make dist to
@@ -489,6 +518,21 @@ jobs:
               binutils-mingw-w64-x86-64 \
               7zip \
               ghostscript
+          fi
+          # Conditional: AppImage build deps, only when a Linux binary
+          # path is present. squashfs-tools provides mksquashfs (the
+          # AppImage payload format); patchelf is universal RPATH /
+          # interpreter rewriting used by every AppImage builder;
+          # desktop-file-utils validates the .desktop file every
+          # AppImage embeds. The specific AppImage builder
+          # (linuxdeploy, appimagetool, appimage-builder, …) is the
+          # project's choice — its linux-hook.sh downloads it by SHA
+          # at release time, mirroring how cosign is installed.
+          if [ "${{ steps.linux.outputs.detected }}" = 'true' ]; then
+            apt-get install -y --no-install-recommends \
+              squashfs-tools \
+              patchelf \
+              desktop-file-utils
           fi
           git config --global --add safe.directory "${GITHUB_WORKSPACE}"
 
@@ -600,6 +644,30 @@ jobs:
                    exit 1; }
             cat /tmp/scan/trace-windows.log >> /tmp/scan/trace.log
             echo "Windows trace appended: $(wc -l < /tmp/scan/trace-windows.log) lines"
+          fi
+
+          # Linux binary build, if detected. Same trace-and-append
+          # pattern as Windows above. The hook downloads its preferred
+          # AppImage builder by SHA at build time; squashfs-tools and
+          # patchelf were installed by the toolchain step. Whatever
+          # additional apt-installed binaries the hook touches land
+          # in the trace and pin into the emitted Dockerfile naturally.
+          LINUX_CMD='${{ steps.linux.outputs.cmd }}'
+          if [ -n "${LINUX_CMD}" ]; then
+            echo "Regenerating distdir for Linux trace..."
+            make -s distdir
+            PACKAGE=$(awk -F' *= *' '$1 == "PACKAGE" {print $2; exit}' Makefile)
+            VERSION=$(awk -F' *= *' '$1 == "VERSION" {print $2; exit}' Makefile)
+            DISTDIR="${PACKAGE}-${VERSION}"
+            [ -d "${DISTDIR}" ] || { echo "ERROR: distdir ${DISTDIR} not found for linux trace"; ls -la; exit 1; }
+            echo "Tracing Linux binary build from ${DISTDIR}: ${LINUX_CMD}"
+            strace -f -e trace=openat,execve -o /tmp/scan/trace-linux.log \
+                   bash -c "cd '${DISTDIR}' && ${LINUX_CMD}" \
+              || { echo "Linux binary build under strace FAILED."; \
+                   tail -100 /tmp/scan/trace-linux.log || true; \
+                   exit 1; }
+            cat /tmp/scan/trace-linux.log >> /tmp/scan/trace.log
+            echo "Linux trace appended: $(wc -l < /tmp/scan/trace-linux.log) lines"
           fi
 
           echo "trace_lines=$(wc -l < /tmp/scan/trace.log)" >> "$GITHUB_OUTPUT"
