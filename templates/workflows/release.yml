@@ -1097,17 +1097,454 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # Linux binary path (AppImage). Same per-pass-container architecture
+  # as build_source / build_windows: identical absolute pwd in both
+  # passes, bit-compare in verify_appimage, no per-target DESTDIR
+  # workarounds. The path is gated on .slsa-autotools/linux-hook.sh
+  # so projects without a Linux binary entry point see these jobs as
+  # skipped.
+  #
+  # Why AppImage and not bare ELF / .deb / .rpm: AppImage bundles its
+  # dependencies into a single self-contained file that runs across
+  # most modern distros. Bare ELF would force adopters to ship one
+  # binary per glibc/libstdc++ ABI window. .deb and .rpm are
+  # distro-coupled and mean reproducing each distro's packaging
+  # toolchain. AppImage is the format that lets one build deliver to
+  # the broadest audience while keeping the reproducibility surface
+  # small (fixed runtime stub + SquashFS payload + ELF inside).
+  build_appimage_pass1:
+    name: Build AppImage (pass 1)
+    needs: test
+    if: needs.test.outputs.has_linux == 'true'
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/${{ github.repository }}/builder@sha256:{{BUILDER_DIGEST}}
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 45
+    permissions:
+      contents: read
+
+    steps:
+      - name: Mark workspace safe for git (pre-checkout)
+        shell: sh
+        run: git config --global --add safe.directory '*'
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Derive version and SOURCE_DATE_EPOCH
+        id: meta
+        run: |
+          set -eu
+          VERSION="${GITHUB_REF_NAME#v}"
+          SDE=$(git log -1 --format=%ct "${GITHUB_REF_NAME}")
+          {
+            echo "version=${VERSION}"
+            echo "sde=${SDE}"
+          } >> "$GITHUB_OUTPUT"
+          echo "SOURCE_DATE_EPOCH=${SDE}" >> "$GITHUB_ENV"
+
+      - name: Bootstrap autotools
+        run: |
+          set -euo pipefail
+          if [ -x .slsa-autotools/build-hook.sh ]; then
+            ./.slsa-autotools/build-hook.sh
+          elif [ -x autogen.sh ]; then
+            ./autogen.sh || autoreconf -fi
+          elif [ -x bootstrap ]; then
+            ./bootstrap || autoreconf -fi
+          elif [ -f configure.ac ] || [ -f configure.in ]; then
+            autoreconf -fi
+          fi
+          [ -x ./configure ] || { echo "ERROR: no ./configure after bootstrap"; exit 1; }
+
+      - name: Detect Linux build entry point
+        id: linux
+        run: |
+          set -eu
+          # Hook-only — no convention path. Same as scan.yml.
+          if [ -x .slsa-autotools/linux-hook.sh ]; then
+            echo "cmd=${GITHUB_WORKSPACE}/.slsa-autotools/linux-hook.sh" >> "$GITHUB_OUTPUT"
+          elif [ -f .slsa-autotools/linux-hook.sh ]; then
+            echo "cmd=bash ${GITHUB_WORKSPACE}/.slsa-autotools/linux-hook.sh" >> "$GITHUB_OUTPUT"
+          else
+            echo "ERROR: Linux job reached without an entry point; needs.test.outputs.has_linux gate disagrees with detection?"
+            exit 1
+          fi
+
+      - name: Install reproducibility wrappers
+        # Universal for any native-Linux AppImage build:
+        #   (A) gcc / g++ / cc / c++ wrapper injects -ffile-prefix-map
+        #       so DWARF paths are stable across the two passes, and
+        #       -Wl,--build-id=none so the ELF .note.gnu.build-id
+        #       section doesn't carry run-to-run entropy. (PE's
+        #       --no-insert-timestamp doesn't apply to ELF, which has
+        #       no equivalent header timestamp.)
+        #   (B) mksquashfs wrapper appends reproducibility flags so
+        #       the SquashFS payload (the AppImage body) is byte-stable
+        #       regardless of how the calling AppImage builder invoked
+        #       it. mksquashfs resolves duplicate options last-wins, so
+        #       appending lets our flags override anything passed.
+        # PATH is then prefixed with /opt/wrappers so any invocation
+        # of gcc / mksquashfs picks up the wrappers transparently.
+        run: |
+          set -euo pipefail
+          mkdir -p /opt/wrappers
+          for CC in gcc g++ cc c++; do
+            REAL="/usr/bin/${CC}"
+            [ -x "${REAL}" ] || continue
+            cat > "/opt/wrappers/${CC}" <<WRAP
+          #!/bin/sh
+          exec ${REAL} \\
+            "-ffile-prefix-map=\${DISTDIR_TOP}=." \\
+            -Wl,--build-id=none \\
+            "\$@"
+          WRAP
+            chmod +x "/opt/wrappers/${CC}"
+          done
+          cat > /opt/wrappers/mksquashfs <<'WRAP'
+          #!/bin/sh
+          exec /usr/bin/mksquashfs "$@" \
+            -mkfs-time 0 \
+            -all-time 0 \
+            -no-exports \
+            -no-xattrs \
+            -all-root
+          WRAP
+          chmod +x /opt/wrappers/mksquashfs
+          echo "PATH=/opt/wrappers:${PATH}" >> "$GITHUB_ENV"
+
+      - name: Build AppImage
+        env:
+          TAR_OPTIONS: '--owner=0 --group=0 --numeric-owner --mode=u+rw,go+r-w --sort=name --clamp-mtime --mtime=@${{ steps.meta.outputs.sde }}'
+          LC_COLLATE: 'C'
+          # coreutils' configure refuses to run as root unless this is
+          # set. Container jobs run as root. Other projects ignore the
+          # variable; zero-cost universal.
+          FORCE_UNSAFE_CONFIGURE: '1'
+        run: |
+          set -euo pipefail
+          LINUX_CMD='${{ steps.linux.outputs.cmd }}'
+          mkdir build
+          cd build
+          ../configure --quiet --enable-maintainer-mode
+          make -s distdir GITLOG_TO_CHANGELOG=true
+          PACKAGE=$(awk -F' *= *' '$1 == "PACKAGE" {print $2; exit}' Makefile)
+          VERSION=$(awk -F' *= *' '$1 == "VERSION" {print $2; exit}' Makefile)
+          DISTDIR="${PACKAGE}-${VERSION}"
+          [ -n "${PACKAGE}" ] && [ -n "${VERSION}" ] && [ -d "${DISTDIR}" ] \
+            || { echo "ERROR: could not locate distdir (PACKAGE=${PACKAGE:-unset} VERSION=${VERSION:-unset})"; ls -la; exit 1; }
+          FIXED_DATE=$(date -u -d "@${SOURCE_DATE_EPOCH}" "+%Y-%m-%d %H:%M+0000")
+          find "${DISTDIR}" -type f \( -name '*.pot' -o -name '*.po' \) \
+            -exec sed -i "s|^\"POT-Creation-Date: .*|\"POT-Creation-Date: ${FIXED_DATE}\\\\n\"|" {} + 2>/dev/null || true
+          cd "${DISTDIR}"
+          # DISTDIR_TOP is what -ffile-prefix-map rewrites to "." in
+          # debug paths — must be exported before the build fires.
+          DISTDIR_TOP="$(pwd)"
+          export DISTDIR_TOP
+          bash -c "${LINUX_CMD}"
+          # Collect AppImages the hook produced. Standard arch suffixes
+          # are accepted; projects targeting one arch only ship one file.
+          mkdir -p "${GITHUB_WORKSPACE}/linux-dist"
+          shopt -s nullglob
+          copied=0
+          for f in *-x86_64.AppImage *-aarch64.AppImage *-armhf.AppImage *-i686.AppImage; do
+            cp "$f" "${GITHUB_WORKSPACE}/linux-dist/"
+            copied=$((copied+1))
+          done
+          if [ "${copied}" -eq 0 ]; then
+            echo "ERROR: Linux build produced no *-{x86_64,aarch64,armhf,i686}.AppImage artifacts in $(pwd)"
+            ls -la
+            exit 1
+          fi
+
+      - name: Upload pass 1 AppImage artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: appimage-pass1
+          path: linux-dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  build_appimage_pass2:
+    # Byte-identical mirror of build_appimage_pass1. Change in pairs.
+    name: Build AppImage (pass 2)
+    needs: test
+    if: needs.test.outputs.has_linux == 'true'
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/${{ github.repository }}/builder@sha256:{{BUILDER_DIGEST}}
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 45
+    permissions:
+      contents: read
+
+    steps:
+      - name: Mark workspace safe for git (pre-checkout)
+        shell: sh
+        run: git config --global --add safe.directory '*'
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Derive version and SOURCE_DATE_EPOCH
+        id: meta
+        run: |
+          set -eu
+          VERSION="${GITHUB_REF_NAME#v}"
+          SDE=$(git log -1 --format=%ct "${GITHUB_REF_NAME}")
+          {
+            echo "version=${VERSION}"
+            echo "sde=${SDE}"
+          } >> "$GITHUB_OUTPUT"
+          echo "SOURCE_DATE_EPOCH=${SDE}" >> "$GITHUB_ENV"
+
+      - name: Bootstrap autotools
+        run: |
+          set -euo pipefail
+          if [ -x .slsa-autotools/build-hook.sh ]; then
+            ./.slsa-autotools/build-hook.sh
+          elif [ -x autogen.sh ]; then
+            ./autogen.sh || autoreconf -fi
+          elif [ -x bootstrap ]; then
+            ./bootstrap || autoreconf -fi
+          elif [ -f configure.ac ] || [ -f configure.in ]; then
+            autoreconf -fi
+          fi
+          [ -x ./configure ] || { echo "ERROR: no ./configure after bootstrap"; exit 1; }
+
+      - name: Detect Linux build entry point
+        id: linux
+        run: |
+          set -eu
+          if [ -x .slsa-autotools/linux-hook.sh ]; then
+            echo "cmd=${GITHUB_WORKSPACE}/.slsa-autotools/linux-hook.sh" >> "$GITHUB_OUTPUT"
+          elif [ -f .slsa-autotools/linux-hook.sh ]; then
+            echo "cmd=bash ${GITHUB_WORKSPACE}/.slsa-autotools/linux-hook.sh" >> "$GITHUB_OUTPUT"
+          else
+            echo "ERROR: Linux job reached without an entry point; needs.test.outputs.has_linux gate disagrees with detection?"
+            exit 1
+          fi
+
+      - name: Install reproducibility wrappers
+        run: |
+          set -euo pipefail
+          mkdir -p /opt/wrappers
+          for CC in gcc g++ cc c++; do
+            REAL="/usr/bin/${CC}"
+            [ -x "${REAL}" ] || continue
+            cat > "/opt/wrappers/${CC}" <<WRAP
+          #!/bin/sh
+          exec ${REAL} \\
+            "-ffile-prefix-map=\${DISTDIR_TOP}=." \\
+            -Wl,--build-id=none \\
+            "\$@"
+          WRAP
+            chmod +x "/opt/wrappers/${CC}"
+          done
+          cat > /opt/wrappers/mksquashfs <<'WRAP'
+          #!/bin/sh
+          exec /usr/bin/mksquashfs "$@" \
+            -mkfs-time 0 \
+            -all-time 0 \
+            -no-exports \
+            -no-xattrs \
+            -all-root
+          WRAP
+          chmod +x /opt/wrappers/mksquashfs
+          echo "PATH=/opt/wrappers:${PATH}" >> "$GITHUB_ENV"
+
+      - name: Build AppImage
+        env:
+          TAR_OPTIONS: '--owner=0 --group=0 --numeric-owner --mode=u+rw,go+r-w --sort=name --clamp-mtime --mtime=@${{ steps.meta.outputs.sde }}'
+          LC_COLLATE: 'C'
+          FORCE_UNSAFE_CONFIGURE: '1'
+        run: |
+          set -euo pipefail
+          LINUX_CMD='${{ steps.linux.outputs.cmd }}'
+          mkdir build
+          cd build
+          ../configure --quiet --enable-maintainer-mode
+          make -s distdir GITLOG_TO_CHANGELOG=true
+          PACKAGE=$(awk -F' *= *' '$1 == "PACKAGE" {print $2; exit}' Makefile)
+          VERSION=$(awk -F' *= *' '$1 == "VERSION" {print $2; exit}' Makefile)
+          DISTDIR="${PACKAGE}-${VERSION}"
+          [ -n "${PACKAGE}" ] && [ -n "${VERSION}" ] && [ -d "${DISTDIR}" ] \
+            || { echo "ERROR: could not locate distdir (PACKAGE=${PACKAGE:-unset} VERSION=${VERSION:-unset})"; ls -la; exit 1; }
+          FIXED_DATE=$(date -u -d "@${SOURCE_DATE_EPOCH}" "+%Y-%m-%d %H:%M+0000")
+          find "${DISTDIR}" -type f \( -name '*.pot' -o -name '*.po' \) \
+            -exec sed -i "s|^\"POT-Creation-Date: .*|\"POT-Creation-Date: ${FIXED_DATE}\\\\n\"|" {} + 2>/dev/null || true
+          cd "${DISTDIR}"
+          DISTDIR_TOP="$(pwd)"
+          export DISTDIR_TOP
+          bash -c "${LINUX_CMD}"
+          mkdir -p "${GITHUB_WORKSPACE}/linux-dist"
+          shopt -s nullglob
+          copied=0
+          for f in *-x86_64.AppImage *-aarch64.AppImage *-armhf.AppImage *-i686.AppImage; do
+            cp "$f" "${GITHUB_WORKSPACE}/linux-dist/"
+            copied=$((copied+1))
+          done
+          if [ "${copied}" -eq 0 ]; then
+            echo "ERROR: Linux build produced no *-{x86_64,aarch64,armhf,i686}.AppImage artifacts in $(pwd)"
+            ls -la
+            exit 1
+          fi
+
+      - name: Upload pass 2 AppImage artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: appimage-pass2
+          path: linux-dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  verify_appimage:
+    name: Verify AppImage reproducibility, attest, sign
+    needs: [build_appimage_pass1, build_appimage_pass2]
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/${{ github.repository }}/builder@sha256:{{BUILDER_DIGEST}}
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
+
+    steps:
+      - name: Download pass 1 AppImage
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: appimage-pass1
+          path: linux-pass1
+
+      - name: Download pass 2 AppImage
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: appimage-pass2
+          path: linux-pass2
+
+      - name: Verify AppImage reproducibility
+        run: |
+          set -eu
+          (cd linux-pass1 && ls -1 | LC_ALL=C sort) > pass1.list
+          (cd linux-pass2 && ls -1 | LC_ALL=C sort) > pass2.list
+          if ! diff -u pass1.list pass2.list; then
+            echo "FAIL: pass1 and pass2 emitted different file sets"
+            exit 1
+          fi
+          sha256sum linux-pass1/* linux-pass2/*
+          for f in linux-pass1/*; do
+            base=$(basename "$f")
+            diff -q "linux-pass1/${base}" "linux-pass2/${base}"
+          done
+          echo "AppImage reproducibility verified."
+
+      - name: Diagnose AppImage differences
+        if: ${{ failure() }}
+        # AppImages are runtime stub + SquashFS. unsquashfs lists the
+        # payload; differences in the runtime stub itself (first ~128 KB
+        # of each file) point to a non-pinned appimagetool/runtime.
+        run: |
+          set -u
+          sha256sum linux-pass1/* linux-pass2/* || true
+          for f in linux-pass1/*; do
+            base=$(basename "$f")
+            echo "=== ${base} payload listing diff ==="
+            unsquashfs -d /tmp/p1-extract -ll "linux-pass1/${base}" > /tmp/p1.list 2>/dev/null || true
+            unsquashfs -d /tmp/p2-extract -ll "linux-pass2/${base}" > /tmp/p2.list 2>/dev/null || true
+            diff -u /tmp/p1.list /tmp/p2.list | head -100 || true
+            rm -rf /tmp/p1-extract /tmp/p2-extract
+          done
+
+      - name: Size-floor sanity check
+        # Generic liar-detector for AppImage artifacts. The 256 KiB
+        # floor is the runtime stub plus a non-trivial payload — an
+        # empty SquashFS would land below this. Tune per project.
+        run: |
+          set -euo pipefail
+          MIN_SIZE=262144
+          for f in linux-pass1/*; do
+            SIZE=$(wc -c < "$f")
+            if [ "${SIZE}" -lt "${MIN_SIZE}" ]; then
+              echo "FAIL: $(basename "$f") suspiciously small: ${SIZE} < ${MIN_SIZE}"
+              exit 1
+            fi
+            echo "OK: $(basename "$f") ${SIZE} bytes"
+          done
+
+      - name: Assemble release artifacts
+        # Sign pass1's bytes — identical to pass2's per the bit-compare.
+        run: |
+          set -eu
+          mkdir -p release
+          cp linux-pass1/* release/
+
+      - name: SLSA build provenance
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-path: |
+            release/*-x86_64.AppImage
+            release/*-aarch64.AppImage
+            release/*-armhf.AppImage
+            release/*-i686.AppImage
+
+      - name: Install cosign
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          apt-get install -y --no-install-recommends curl ca-certificates
+          COSIGN_VERSION=v3.0.6
+          COSIGN_SHA256=c956e5dfcac53d52bcf058360d579472f0c1d2d9b69f55209e256fe7783f4c74
+          curl -fsSL \
+            "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64" \
+            -o /usr/local/bin/cosign
+          echo "${COSIGN_SHA256}  /usr/local/bin/cosign" | sha256sum -c -
+          chmod +x /usr/local/bin/cosign
+
+      - name: Sign AppImage artifacts with cosign
+        env:
+          COSIGN_YES: 'true'
+        run: |
+          set -euo pipefail
+          for f in release/*.AppImage; do
+            [ -f "${f}" ] || continue
+            cosign sign-blob --bundle "${f}.sigstore" --new-bundle-format "${f}"
+          done
+          ls -la release/
+
+      - name: Upload AppImage artifacts for publish job
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-artifacts
+          path: release/
+          if-no-files-found: error
+          retention-days: 1
+
   publish:
     name: Create draft release
-    # needs verify_windows too so publish waits for it, but we can't
-    # block on it: projects without a Windows path see the windows
-    # pass jobs (and therefore verify_windows) as skipped. The if:
-    # below permits skipped + success while refusing failed/cancelled.
-    needs: [verify_source, verify_windows]
+    # needs the binary verify jobs too so publish waits for them, but
+    # we can't block on them: projects without a Windows or Linux path
+    # see those pass jobs (and therefore the verify jobs) as skipped.
+    # The if: below permits skipped + success and refuses failed /
+    # cancelled for each independently.
+    needs: [verify_source, verify_windows, verify_appimage]
     if: |
       always()
       && needs.verify_source.result == 'success'
       && (needs.verify_windows.result == 'success' || needs.verify_windows.result == 'skipped')
+      && (needs.verify_appimage.result == 'success' || needs.verify_appimage.result == 'skipped')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -1141,6 +1578,13 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: windows-artifacts
+          path: release
+
+      - name: Download AppImage artifacts
+        if: needs.verify_appimage.result == 'success'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: linux-artifacts
           path: release
 
       - name: Discover distdir name
