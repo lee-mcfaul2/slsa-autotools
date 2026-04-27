@@ -494,6 +494,7 @@ jobs:
             bison \
             gperf \
             wget \
+            cpio \
             libc6-dev \
             zlib1g-dev \
             libbz2-dev \
