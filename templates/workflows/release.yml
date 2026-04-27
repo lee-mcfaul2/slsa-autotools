@@ -94,12 +94,13 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
-    # Propagate Windows detection as a job output so downstream jobs can
-    # gate on it. hashFiles() is only valid in step-level if:, not
-    # job-level if:, so we do the detection in a step of this job and
-    # expose the result.
+    # Propagate Windows + Linux binary detection as job outputs so the
+    # build_*_pass jobs can gate on them. hashFiles() is only valid in
+    # step-level if:, not job-level if:, so detection happens in steps
+    # below and is exposed here.
     outputs:
       has_windows: ${{ steps.windows.outputs.has_windows }}
+      has_linux:   ${{ steps.linux.outputs.has_linux }}
     steps:
       - name: Mark workspace safe for git (pre-checkout)
         shell: sh
@@ -123,6 +124,21 @@ jobs:
           else
             echo "has_windows=false" >> "$GITHUB_OUTPUT"
             echo "No Windows build entry point detected."
+          fi
+
+      - name: Detect Linux binary build entry point
+        # Hook-only — no convention path, same as scan.yml.
+        # build_appimage_pass{1,2} read this via needs.test.outputs.
+        id: linux
+        run: |
+          set -eu
+          if [ -x .slsa-autotools/linux-hook.sh ] \
+              || [ -f .slsa-autotools/linux-hook.sh ]; then
+            echo "has_linux=true"  >> "$GITHUB_OUTPUT"
+            echo "Linux binary build entry point detected."
+          else
+            echo "has_linux=false" >> "$GITHUB_OUTPUT"
+            echo "No Linux binary build entry point detected."
           fi
 
       - name: Bootstrap autotools
