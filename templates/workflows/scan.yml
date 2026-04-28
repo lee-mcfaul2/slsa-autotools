@@ -170,10 +170,14 @@ jobs:
             spec=$(echo "$body" | sed -E 's/.*PKG_CHECK_MODULES\([^,]+,\s*\[?([^],)]+).*/\1/')
             name=$(echo "$spec" | awk '{print $1}')
             ver=$(echo "$spec" | grep -oE '[0-9][0-9.]*' | head -1 || true)
+            # Prefer native -dev packages over cross-compile variants:
+            # apt-file's search for /zlib.pc lists libz-mingw-w64-dev
+            # before zlib1g-dev (alphabetical); filtering -mingw / -cross
+            # gives the native package the resolver actually wants.
             # || true: pipefail + set -e would abort if apt-file
             # search returns non-zero on a no-match. Tolerate as empty.
             pkg=$(apt-file search "/${name}.pc" 2>/dev/null \
-              | awk -F: '/-dev:/{print $1; exit}' || true)
+              | awk -F: '/-dev:/ && !/-mingw/ && !/-cross/{print $1; exit}' || true)
             if [ -n "$pkg" ]; then
               DEPS+=("${pkg}|${ver}|${CONFIGURE_AC}:${lineno} PKG_CHECK_MODULES($name)")
             fi
@@ -263,27 +267,64 @@ jobs:
               [ -z "$sat" ] && sat=" (none in candidate set)"
               printf "  %-30s satisfies on:%s\n" "$pkg" "$sat"
             done
+            # Per-release coverage summary: how many deps each
+            # candidate release would satisfy if the unsatisfiable
+            # ones were dropped. Helps the adopter see "noble covers
+            # all but X" rather than the previous "everything maps to
+            # the newest LTS" collapse, which hid the real picture.
             echo
-            echo "Image groupings (each covers a disjoint subset):"
-            unset GROUPS
-            declare -A GROUPS=()
+            echo "Per-release coverage (deps satisfiable on each candidate):"
+            total=${#DEPS[@]}
+            for r in "${RELEASE_ORDER[@]}"; do
+              count=0
+              for dep in "${DEPS[@]}"; do
+                pkg=$(cut -d'|' -f1 <<<"$dep")
+                sat=" ${SATISFY[$pkg]:-} "
+                [[ "$sat" == *" $r "* ]] && count=$((count + 1))
+              done
+              printf "  ubuntu:%-10s %d/%d deps satisfied\n" "$r" "$count" "$total"
+            done
+
+            # Blockers: deps that no candidate release satisfies.
+            # These are the actual fix-or-drop items; everything else
+            # is just version-window negotiation.
+            echo
+            echo "Blockers (no candidate release satisfies these):"
+            blockers=0
             for dep in "${DEPS[@]}"; do
               pkg=$(cut -d'|' -f1 <<<"$dep")
-              sat="${SATISFY[$pkg]:-}"
-              [ -z "$sat" ] && continue
-              chosen=""
+              src=$(cut -d'|' -f3 <<<"$dep")
+              if [ -z "${SATISFY[$pkg]:-}" ]; then
+                printf "  %-30s  %s\n" "$pkg" "$src"
+                blockers=$((blockers + 1))
+              fi
+            done
+            [ "$blockers" -eq 0 ] && echo "  (none — every dep has at least one satisfying release)"
+
+            # If the only thing standing in the way is the blocker
+            # set, name the release that would work without them.
+            if [ "$blockers" -gt 0 ]; then
               for r in "${RELEASE_ORDER[@]}"; do
-                [[ " $sat " == *" $r "* ]] && { chosen="$r"; break; }
+                covers_all_non_blockers=true
+                for dep in "${DEPS[@]}"; do
+                  pkg=$(cut -d'|' -f1 <<<"$dep")
+                  sat="${SATISFY[$pkg]:-}"
+                  [ -z "$sat" ] && continue   # blocker, skip
+                  [[ " $sat " != *" $r "* ]] && { covers_all_non_blockers=false; break; }
+                done
+                if [ "$covers_all_non_blockers" = true ]; then
+                  echo
+                  echo "Without the blocker(s) above, ubuntu:${r} would satisfy all remaining deps."
+                  break
+                fi
               done
-              [ -n "$chosen" ] && GROUPS["$chosen"]+=" $pkg"
-            done
-            for img in "${!GROUPS[@]}"; do
-              printf "  ubuntu:%s → %s\n" "$img" "${GROUPS[$img]}"
-            done
+            fi
+
             echo
             echo "Resolution paths:"
             echo "  - relax a version constraint in $CONFIGURE_AC"
             echo "  - drop the conflicting dep"
+            echo "  - investigate the apt-file → -dev mapping if a blocker has an obvious upstream package on the latest release (the resolver may have picked a wrong binary)"
             echo "  - build the conflicting dep from source via project-chain (not yet implemented)"
             echo
             echo "Per slsa-autotools design, mixing apt sources across releases is not supported (ABI safety)."
