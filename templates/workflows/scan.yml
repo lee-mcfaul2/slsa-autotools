@@ -350,7 +350,7 @@ jobs:
     defaults:
       run:
         shell: bash
-    timeout-minutes: 45
+    timeout-minutes: 75
     permissions:
       # Needs to push the emitted Dockerfile back to this branch.
       # The Dockerfile is not a workflow file, so default
@@ -413,26 +413,32 @@ jobs:
           deb https://snapshot.ubuntu.com/ubuntu/${SNAPSHOT_TS}/ ${RELEASE}-security main restricted universe multiverse
           APT
           rm -f /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list
-          # snapshot.ubuntu.com occasionally returns 503 on individual
-          # Packages indexes during high traffic. apt-get update exits
-          # 0 with a "Failed to fetch" warning when this happens, then
-          # the subsequent install step explodes with "Unable to locate"
-          # for every package that lived in the missing index. Combine
-          # apt's per-fetch Acquire::Retries with an outer shell-level
-          # retry that re-runs update if any 'Failed to fetch' warning
-          # remains in the log.
-          for attempt in 1 2 3 4 5; do
+          # snapshot.ubuntu.com aggressively rate-limits the GitHub
+          # Actions runner shared egress IP pool. The mirror itself
+          # is healthy (responsive from non-GHA networks); 503s here
+          # are throttling, not outage. Apt's per-fetch
+          # Acquire::Retries handles single-blip transient errors,
+          # but rate-limit cool-off needs minutes — hence the
+          # exponential outer retry below. This is a documented and
+          # fairly common GHA + snapshot.ubuntu.com interaction.
+          for attempt in 1 2 3 4 5 6; do
             apt-get -o Acquire::Retries=5 -o Acquire::http::Pipeline-Depth=1 \
                     update 2>&1 | tee /tmp/apt-update.log
             if ! grep -q 'Failed to fetch' /tmp/apt-update.log; then
               break
             fi
-            if [ "${attempt}" = "5" ]; then
-              echo "ERROR: apt-get update against snapshot.ubuntu.com kept failing across 5 attempts" >&2
+            if [ "${attempt}" = "6" ]; then
+              echo "ERROR: apt-get update against snapshot.ubuntu.com kept failing across 6 attempts" >&2
+              echo "       This is almost certainly GitHub Actions runner IP rate-limiting." >&2
+              echo "       The mirror itself is up; GHA's shared egress pool is throttled." >&2
+              echo "       Re-run the workflow in 30-60 minutes, or move scan.yml to a self-hosted runner." >&2
               grep '^W:' /tmp/apt-update.log >&2 || true
               exit 1
             fi
-            sleep $((attempt * 10))
+            backoff=$((60 * (1 << (attempt - 1))))   # 60, 120, 240, 480, 960s
+            echo "snapshot.ubuntu.com 503 — known GHA-runner rate-limiting." >&2
+            echo "Sleeping ${backoff}s before update retry $((attempt + 1))/6." >&2
+            sleep "${backoff}"
           done
 
       - name: Detect Windows build entry point
@@ -515,25 +521,31 @@ jobs:
         # the emitted Dockerfile.
         run: |
           set -euo pipefail
-          # snapshot.ubuntu.com is occasionally flaky during install
-          # (individual .deb fetches return 503 even after Acquire::
-          # Retries exhausts). Retry the whole install command up to
-          # 5 times with linear backoff, watching the log for any
-          # remaining "Failed to fetch" warnings.
+          # See the apt-get update step above for the rationale —
+          # snapshot.ubuntu.com throttles the GHA runner egress pool,
+          # 503s during install need a multi-minute cool-off, not the
+          # 10-second-class retry that handles ordinary transient
+          # blips.
           apt_install() {
-            for attempt in 1 2 3 4 5; do
+            for attempt in 1 2 3 4 5 6; do
               apt-get -o Acquire::Retries=5 -o Acquire::http::Pipeline-Depth=1 \
                       install -y --no-install-recommends "$@" 2>&1 \
                 | tee /tmp/apt-install.log
               if [ "${PIPESTATUS[0]}" = "0" ] && ! grep -q 'Failed to fetch' /tmp/apt-install.log; then
                 return 0
               fi
-              if [ "${attempt}" = "5" ]; then
-                echo "ERROR: apt-get install kept failing across 5 attempts" >&2
+              if [ "${attempt}" = "6" ]; then
+                echo "ERROR: apt-get install kept failing across 6 attempts" >&2
+                echo "       This is almost certainly GitHub Actions runner IP rate-limiting" >&2
+                echo "       on snapshot.ubuntu.com. Re-run in 30-60 minutes, or move the" >&2
+                echo "       scan job to a self-hosted runner to escape the shared IP pool." >&2
                 grep -E '^E:|^W:' /tmp/apt-install.log >&2 || true
                 return 1
               fi
-              sleep $((attempt * 10))
+              backoff=$((60 * (1 << (attempt - 1))))   # 60, 120, 240, 480, 960s
+              echo "snapshot.ubuntu.com 503 — known GHA-runner rate-limiting." >&2
+              echo "Sleeping ${backoff}s before install retry $((attempt + 1))/6." >&2
+              sleep "${backoff}"
             done
           }
           apt_install \
@@ -620,9 +632,9 @@ jobs:
         if: needs.resolve.outputs.extra_packages != ''
         run: |
           set -euo pipefail
-          # Same snapshot.ubuntu.com transient-503 retry pattern as
-          # the bootstrap toolchain step.
-          for attempt in 1 2 3 4 5; do
+          # Same snapshot.ubuntu.com / GHA-runner rate-limit retry
+          # pattern as the bootstrap toolchain step.
+          for attempt in 1 2 3 4 5 6; do
             # shellcheck disable=SC2086
             apt-get -o Acquire::Retries=5 -o Acquire::http::Pipeline-Depth=1 \
                     install -y --no-install-recommends \
@@ -631,12 +643,16 @@ jobs:
             if [ "${PIPESTATUS[0]}" = "0" ] && ! grep -q 'Failed to fetch' /tmp/apt-extra.log; then
               break
             fi
-            if [ "${attempt}" = "5" ]; then
-              echo "ERROR: project apt deps install kept failing across 5 attempts" >&2
+            if [ "${attempt}" = "6" ]; then
+              echo "ERROR: project apt deps install kept failing across 6 attempts" >&2
+              echo "       Likely GitHub Actions runner IP rate-limiting on snapshot.ubuntu.com." >&2
               grep -E '^E:|^W:' /tmp/apt-extra.log >&2 || true
               exit 1
             fi
-            sleep $((attempt * 10))
+            backoff=$((60 * (1 << (attempt - 1))))
+            echo "snapshot.ubuntu.com 503 — known GHA-runner rate-limiting." >&2
+            echo "Sleeping ${backoff}s before project-deps install retry $((attempt + 1))/6." >&2
+            sleep "${backoff}"
           done
 
       - name: Run project build under strace
