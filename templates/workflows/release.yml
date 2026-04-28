@@ -87,7 +87,7 @@ jobs:
     name: Test before release
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/${{ github.repository }}/builder@sha256:{{BUILDER_DIGEST}}
+      image: ghcr.io/{{LOWERCASE_REPO}}/builder@sha256:{{BUILDER_DIGEST}}
     defaults:
       run:
         shell: bash
@@ -201,7 +201,7 @@ jobs:
     needs: test
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/${{ github.repository }}/builder@sha256:{{BUILDER_DIGEST}}
+      image: ghcr.io/{{LOWERCASE_REPO}}/builder@sha256:{{BUILDER_DIGEST}}
     defaults:
       run:
         shell: bash
@@ -356,7 +356,7 @@ jobs:
     needs: test
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/${{ github.repository }}/builder@sha256:{{BUILDER_DIGEST}}
+      image: ghcr.io/{{LOWERCASE_REPO}}/builder@sha256:{{BUILDER_DIGEST}}
     defaults:
       run:
         shell: bash
@@ -484,7 +484,7 @@ jobs:
     needs: [build_source_pass1, build_source_pass2]
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/${{ github.repository }}/builder@sha256:{{BUILDER_DIGEST}}
+      image: ghcr.io/{{LOWERCASE_REPO}}/builder@sha256:{{BUILDER_DIGEST}}
     defaults:
       run:
         shell: bash
@@ -635,7 +635,7 @@ jobs:
     if: needs.test.outputs.has_windows == 'true'
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/${{ github.repository }}/builder@sha256:{{BUILDER_DIGEST}}
+      image: ghcr.io/{{LOWERCASE_REPO}}/builder@sha256:{{BUILDER_DIGEST}}
     defaults:
       run:
         shell: bash
@@ -821,7 +821,7 @@ jobs:
     if: needs.test.outputs.has_windows == 'true'
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/${{ github.repository }}/builder@sha256:{{BUILDER_DIGEST}}
+      image: ghcr.io/{{LOWERCASE_REPO}}/builder@sha256:{{BUILDER_DIGEST}}
     defaults:
       run:
         shell: bash
@@ -974,7 +974,7 @@ jobs:
     needs: [build_windows_pass1, build_windows_pass2]
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/${{ github.repository }}/builder@sha256:{{BUILDER_DIGEST}}
+      image: ghcr.io/{{LOWERCASE_REPO}}/builder@sha256:{{BUILDER_DIGEST}}
     defaults:
       run:
         shell: bash
@@ -1118,7 +1118,7 @@ jobs:
     if: needs.test.outputs.has_linux == 'true'
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/${{ github.repository }}/builder@sha256:{{BUILDER_DIGEST}}
+      image: ghcr.io/{{LOWERCASE_REPO}}/builder@sha256:{{BUILDER_DIGEST}}
     defaults:
       run:
         shell: bash
@@ -1290,7 +1290,7 @@ jobs:
     if: needs.test.outputs.has_linux == 'true'
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/${{ github.repository }}/builder@sha256:{{BUILDER_DIGEST}}
+      image: ghcr.io/{{LOWERCASE_REPO}}/builder@sha256:{{BUILDER_DIGEST}}
     defaults:
       run:
         shell: bash
@@ -1417,7 +1417,7 @@ jobs:
     needs: [build_appimage_pass1, build_appimage_pass2]
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/${{ github.repository }}/builder@sha256:{{BUILDER_DIGEST}}
+      image: ghcr.io/{{LOWERCASE_REPO}}/builder@sha256:{{BUILDER_DIGEST}}
     defaults:
       run:
         shell: bash
@@ -1655,7 +1655,7 @@ jobs:
             echo "- **Commit:**              \`${GITHUB_SHA}\`"
             echo "- **Tag:**                 \`${GITHUB_REF_NAME}\`"
             echo "- **SOURCE_DATE_EPOCH:**   \`${SDE}\`"
-            echo "- **Builder image:**       \`ghcr.io/${{ github.repository }}/builder@sha256:{{BUILDER_DIGEST}}\`"
+            echo "- **Builder image:**       \`ghcr.io/{{LOWERCASE_REPO}}/builder@sha256:{{BUILDER_DIGEST}}\`"
             echo "- **Workflow:**            \`${WORKFLOW_REF}\`"
             echo
             echo "### Checksums"

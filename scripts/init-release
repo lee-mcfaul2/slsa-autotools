@@ -210,6 +210,16 @@ if git -C "${TARGET}" show-ref --verify --quiet "refs/heads/${TOPIC_BRANCH}"; th
 fi
 
 # ---- render template --------------------------------------------
+#
+# LOWERCASE_REPO: GHCR rejects uppercase characters in repository
+# names. Job-level container.image references can't read a runtime
+# step output (no needs.* available before the job starts), so the
+# image tag has to be a static lowercase string baked in at scaffold
+# time. The cosign certificate-identity URLs and gh attestation
+# verify --repo references stay case-preserving since github.com
+# preserves the source casing for repo URLs.
+
+LOWERCASE_REPO=$(printf '%s\n' "${OWNER}/${REPO}" | tr '[:upper:]' '[:lower:]')
 
 render_template() {
   local src="$1"
@@ -218,6 +228,7 @@ render_template() {
     -e "s|{{GENERATOR_URL}}|${GENERATOR_URL}|g" \
     -e "s|{{GENERATOR_SHA}}|${GENERATOR_SHA}|g" \
     -e "s|{{BUILDER_DIGEST}}|${BUILDER_DIGEST}|g" \
+    -e "s|{{LOWERCASE_REPO}}|${LOWERCASE_REPO}|g" \
     "${src}" > "${dst}"
 }
 
