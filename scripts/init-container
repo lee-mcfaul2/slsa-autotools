@@ -224,51 +224,6 @@ if git -C "${TARGET}" show-ref --verify --quiet "refs/heads/${TOPIC_BRANCH}"; th
   die "target already has branch '${TOPIC_BRANCH}'. Delete it (git branch -D ${TOPIC_BRANCH}) and re-run."
 fi
 
-# ---- ask about Ubuntu base override ------------------------------
-#
-# The default scan resolver picks the newest LTS that satisfies
-# configure.ac dep declarations. Some projects need an older base —
-# the typical case is AppImage builds, where linuxdeployqt rejects
-# any host glibc newer than Jammy's because the bundled libs would
-# not run on still-supported older distros. Asking once at scaffold
-# time bakes the answer into scan.yml; it can be changed later by
-# editing the BASE_OVERRIDE env value in scan.yml or re-running
-# this script.
-#
-# Validated against the same codename list scan.yml's pick-base.sh
-# uses. Adding a new Ubuntu release means updating both.
-
-VALID_CODENAMES=(resolute noble jammy focal questing plucky oracular)
-
-cat <<EOF
-
-Does this project need a specific Ubuntu base?
-
-  - Most projects: press enter to auto-detect via configure.ac.
-  - AppImage projects: typically need 'jammy' (linuxdeployqt's
-    glibc check rejects newer hosts).
-  - Specify a codename: ${VALID_CODENAMES[*]}
-
-EOF
-
-while :; do
-  printf 'Ubuntu base codename (or empty for auto): '
-  read -r BASE_OVERRIDE
-  BASE_OVERRIDE=$(printf '%s' "${BASE_OVERRIDE}" | tr -d '[:space:]')
-  if [ -z "${BASE_OVERRIDE}" ]; then
-    log "Auto-detect: scan.yml will pick the base from configure.ac"
-    break
-  fi
-  for cand in "${VALID_CODENAMES[@]}"; do
-    if [ "${BASE_OVERRIDE}" = "${cand}" ]; then
-      log "Pinning Ubuntu base: ${BASE_OVERRIDE}"
-      break 2
-    fi
-  done
-  warn "'${BASE_OVERRIDE}' is not a known codename. Try one of:"
-  warn "  ${VALID_CODENAMES[*]}"
-done
-
 # ---- render templates -------------------------------------------
 #
 # One-pass sed substitution. Placeholders are deliberately
@@ -281,7 +236,6 @@ render_template() {
     -e "s|{{GENERATOR_URL}}|${GENERATOR_URL}|g" \
     -e "s|{{GENERATOR_SHA}}|${GENERATOR_SHA}|g" \
     -e "s|{{OWNER_TYPE_PATH}}|${OWNER_TYPE_PATH}|g" \
-    -e "s|{{BASE_OVERRIDE}}|${BASE_OVERRIDE}|g" \
     "${src}" > "${dst}"
 }
 
@@ -307,7 +261,6 @@ slsa-autotools is about to:
   - create branch:     ${TOPIC_BRANCH}  (based on ${SRC_BRANCH})
   - write files:       ${TARGET}/.github/workflows/scan.yml
                        ${TARGET}/.github/workflows/build-container.yml
-  - Ubuntu base:       ${BASE_OVERRIDE:-auto-detect from configure.ac}
   - commit:            "Add slsa-autotools container build workflow"
   - push:              origin ${TOPIC_BRANCH}
 

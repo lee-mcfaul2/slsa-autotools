@@ -102,16 +102,6 @@ jobs:
         # Candidate release set is intentionally hardcoded — adding a
         # new Ubuntu release is a one-line change and guarantees a
         # human reviewed it before scans start picking it.
-        #
-        # BASE_OVERRIDE: set by init-container when the adopter
-        # answered the "specific Ubuntu version?" prompt. When set,
-        # dep extraction still runs (the .pc / m4 -> -dev mapping is
-        # the same regardless of which release we end up on), but the
-        # rmadison-driven intersection is skipped and the adopter's
-        # codename is used as-is. Typical reason: AppImage builds
-        # need Jammy because linuxdeployqt rejects newer host glibc.
-        env:
-          BASE_OVERRIDE: '{{BASE_OVERRIDE}}'
         run: |
           set -euo pipefail
           cat > /tmp/pick-base.sh <<'PICK_BASE_EOF'
@@ -197,16 +187,6 @@ jobs:
           for d in "${DEPS[@]}"; do
             cut -d'|' -f1 <<<"$d"
           done | sort -u > /tmp/pick-base-extra-packages.txt
-
-          # Adopter override: skip the rmadison-driven intersection
-          # and use the codename the adopter declared at init time.
-          # Dep extraction above still ran, so extra_packages is
-          # populated from configure.ac as usual.
-          if [ -n "${BASE_OVERRIDE:-}" ]; then
-            log "Using adopter-specified base: ${BASE_OVERRIDE}"
-            echo "${BASE_OVERRIDE}"
-            exit 0
-          fi
 
           if [ ${#DEPS[@]} -eq 0 ]; then
             log "no dep declarations in $CONFIGURE_AC; defaulting to newest LTS (${LTS[0]})"
