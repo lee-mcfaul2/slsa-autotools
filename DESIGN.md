@@ -137,6 +137,46 @@ holes get patched. linuxdeployqt's "continuous" tag floats; a
 pinning hook downloads it at a known SHA256 and rejects any other
 bytes. Same pattern for any tool that ships rolling releases.
 
+### Recommended builder: linuxdeploy
+
+Of the available AppImage builders, **linuxdeploy** (the modern
+fork at `linuxdeploy/linuxdeploy`) is the right default. Two
+reasons matter for the slsa-autotools flow:
+
+1. **It ships stable tagged releases** — `1-alpha-20251107-1`,
+   `1-alpha-20250213-2`, etc. — that are pinnable by SHA256 from
+   the URL alone. linuxdeployqt only ships a perpetually-floating
+   `continuous` tag; the SHA is real today but the upstream
+   maintainers can rewrite the same URL tomorrow with a new build.
+   A pinning hook against linuxdeployqt is a snapshot of the byte
+   stream as of the day the hook was committed; one against
+   linuxdeploy is durably auditable.
+
+2. **No host glibc check.** linuxdeployqt hard-aborts if the host
+   distro's glibc is newer than Jammy's, on the theory that
+   bundled libs would not run on still-supported older targets.
+   This forces adopters who use it onto Ubuntu 22.04 (or older)
+   bases regardless of what their project's other dependencies
+   declare. linuxdeploy makes the same compatibility trade-off
+   visible to the adopter rather than enforcing it: bundle on
+   whatever base your deps need, accept that the resulting
+   AppImage's lower bound on target distros tracks the build
+   host's glibc version.
+
+The second point is the load-bearing one. The resolver picks the
+newest LTS that satisfies the project's `PKG_CHECK_MODULES`. A
+project with a modern format-library dependency (libjxl, recent
+libheif, libavif) will land on noble or newer. linuxdeployqt then
+refuses to run; the chain is broken. linuxdeploy keeps the chain
+working by removing the artificial constraint and letting the
+adopter decide what target compatibility window matters.
+
+Projects whose AppImage absolutely must run on Ubuntu 22.04 and
+older have an honest workaround: pin a `BASE_OVERRIDE`-style
+control on the hook itself (set up its own old-glibc build
+environment via a separate container) rather than forcing the
+whole pipeline onto an older base it does not need.
+
 ### What this means for adopters
 
 - **Projects that already ship an AppImage** (ImageMagick, GIMP,
