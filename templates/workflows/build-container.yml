@@ -71,6 +71,19 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Lowercase repository for GHCR
+        # GHCR rejects uppercase characters in repository names; the
+        # github.repository context preserves the source casing.
+        # Compute a lowercase variant once and reference it everywhere
+        # an image tag is built. Without this, projects whose repo
+        # name contains capitals (ImageMagick, FreeCAD, etc.) fail
+        # with: invalid tag "ghcr.io/owner/Repo/builder:..."
+        # repository name must be lowercase.
+        id: ghcr
+        run: |
+          set -eu
+          echo "repo=$(echo "${{ github.repository }}" | tr 'A-Z' 'a-z')" >> "$GITHUB_OUTPUT"
+
       - name: Compute image tag from Dockerfile content
         id: tag
         run: |
@@ -144,8 +157,8 @@ jobs:
           # (moves on every successful build). Consumers should
           # pin by digest — the tag is a readability affordance.
           tags: |
-            ghcr.io/${{ github.repository }}/builder:${{ steps.tag.outputs.tag }}
-            ghcr.io/${{ github.repository }}/builder:latest
+            ghcr.io/${{ steps.ghcr.outputs.repo }}/builder:${{ steps.tag.outputs.tag }}
+            ghcr.io/${{ steps.ghcr.outputs.repo }}/builder:latest
           # Provenance: false — build-push-action's own provenance
           # feature injects an attestation into the image manifest
           # list, which changes the image digest on every build and
@@ -162,7 +175,7 @@ jobs:
         if: steps.check.outputs.exists != 'true'
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
-          subject-name: ghcr.io/${{ github.repository }}/builder
+          subject-name: ghcr.io/${{ steps.ghcr.outputs.repo }}/builder
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
 
@@ -191,7 +204,7 @@ jobs:
           # registry namespace; verification finds it automatically
           # from the image reference.
           cosign sign \
-            "ghcr.io/${{ github.repository }}/builder@${{ steps.push.outputs.digest }}"
+            "ghcr.io/${{ steps.ghcr.outputs.repo }}/builder@${{ steps.push.outputs.digest }}"
 
       - name: Summary
         if: steps.check.outputs.exists != 'true'
@@ -199,7 +212,7 @@ jobs:
           {
             echo "### Published container image"
             echo ""
-            echo "- **Image:** \`ghcr.io/${{ github.repository }}/builder\`"
+            echo "- **Image:** \`ghcr.io/${{ steps.ghcr.outputs.repo }}/builder\`"
             echo "- **Tag:** \`${{ steps.tag.outputs.tag }}\` (sha256 of Dockerfile, first 16 chars)"
             echo "- **Digest:** \`${{ steps.push.outputs.digest }}\`"
             echo ""
