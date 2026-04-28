@@ -169,7 +169,13 @@ jobs:
             # boundary actually exercised.
             spec=$(echo "$body" | sed -E 's/.*PKG_CHECK_MODULES\([^,]+,\s*\[?([^],)]+).*/\1/')
             name=$(echo "$spec" | awk '{print $1}')
-            ver=$(echo "$spec" | grep -oE '[0-9][0-9.]*' | head -1 || true)
+            # Version constraint must follow an explicit comparison
+            # operator (>=, =, >, <=). Earlier we grabbed any digit
+            # run, which mis-parsed names like "lqr-1" as version 1
+            # and then claimed liblqr-1-0-dev (actually 0.4.2) failed
+            # the bogus ">= 1" check on every release.
+            ver=$(echo "$spec" | grep -oE '(>=|<=|>|<|=)[[:space:]]*[0-9][0-9.]*' \
+                              | grep -oE '[0-9][0-9.]+' | head -1 || true)
             # Prefer native -dev packages over cross-compile variants:
             # apt-file's search for /zlib.pc lists libz-mingw-w64-dev
             # before zlib1g-dev (alphabetical); filtering -mingw / -cross
