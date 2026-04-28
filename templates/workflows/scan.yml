@@ -202,10 +202,18 @@ jobs:
           for d in "${DEPS[@]}"; do log "  $d"; done
 
           declare -A SATISFY=()
+          declare -A RMADISON_RAW=()
           for dep in "${DEPS[@]}"; do
             pkg=$(cut -d'|' -f1 <<<"$dep")
             min_ver=$(cut -d'|' -f2 <<<"$dep")
+            # Capture rmadison stdout AND stderr together so transient
+            # query failures (timeouts, rate-limits, format weirdness)
+            # don't silently produce empty SATISFY entries that look
+            # identical to "package legitimately absent everywhere."
+            rmadison_out=$(rmadison -u ubuntu "$pkg" 2>&1 || true)
+            RMADISON_RAW["$pkg"]="${rmadison_out}"
             while IFS= read -r line; do
+              [ -z "${line// }" ] && continue
               release=$(awk -F'|' '{gsub(/ /,"",$3); print $3}' <<<"$line")
               version=$(awk -F'|' '{gsub(/ /,"",$2); print $2}' <<<"$line")
               release=${release%%/*}
@@ -219,7 +227,23 @@ jobs:
               if [ -z "$min_ver" ] || dpkg --compare-versions "$clean" ge "$min_ver"; then
                 SATISFY["$pkg"]+=" $release"
               fi
-            done < <(rmadison -u ubuntu "$pkg" 2>/dev/null || true)
+            done <<<"${rmadison_out}"
+          done
+
+          # Debug dump: for any package that ended up with no
+          # satisfying release, print the raw rmadison output so the
+          # operator can tell "package genuinely missing everywhere"
+          # apart from "rmadison query failed transiently / format
+          # changed / hit a rate limit." This is the difference
+          # between a fix-or-drop decision and a retry decision.
+          for dep in "${DEPS[@]}"; do
+            pkg=$(cut -d'|' -f1 <<<"$dep")
+            if [ -z "${SATISFY[$pkg]:-}" ]; then
+              warn "DEBUG: rmadison returned no satisfying rows for ${pkg}; raw output follows:"
+              while IFS= read -r ln; do
+                warn "    ${ln}"
+              done <<<"${RMADISON_RAW[$pkg]:-(empty)}"
+            fi
           done
 
           INTERSECTION=("${RELEASE_ORDER[@]}")
