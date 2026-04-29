@@ -33,13 +33,10 @@
 #     (first install, or user bumps SNAPSHOT_TS)
 #   - workflow_dispatch for on-demand refresh without editing
 #
-# Project bootstrap hook:
-#   If `.slsa-autotools/build-hook.sh` exists in the repo, it is
-#   executed in place of the default `./autogen.sh && ./configure
-#   && make dist` sequence. Useful for projects with unusual
-#   bootstrap requirements (submodule pulls, custom configure
-#   flags, etc.). The hook runs with CWD set to the repo root and
-#   inherits PATH including all bootstrap tooling.
+# slsa-autotools never adds or modifies project-side files outside
+# of `Dockerfile` and `.github/workflows/`. Bootstrap, Windows, and
+# Linux build paths are detected from what the project already
+# ships — see the detection steps below.
 
 name: Scan and pin Dockerfile
 
@@ -493,39 +490,30 @@ jobs:
           done
 
       - name: Detect Windows build entry point
-        # Universal detection, convention- and hook-driven:
-        #   - .slsa-autotools/windows-hook.sh   (hook, highest priority)
-        #   - windows/build.bash                (xz convention; candidate
-        #                                        for becoming a wider
-        #                                        default as we see more
-        #                                        projects adopt it)
-        # When detected, the bootstrap step below also installs the
+        # Detection only — no hooks. The project must ship its own
+        # mingw cross-compile script under one of the recognised
+        # paths. Recognised paths (first match wins):
+        #   - windows/build.bash            (xz convention)
+        #   - dist-build/msys2-win64.sh     (libsodium convention)
+        # When detected, the bootstrap step below installs the
         # mingw-w64 cross-toolchain + archive tooling, and the trace
-        # step below also runs the Windows build so its apt deps land
-        # in the emitted Dockerfile naturally.
+        # step runs the Windows build so its apt deps land in the
+        # emitted Dockerfile naturally.
+        #
+        # mode-100644 is fine — `bash <path>` runs it regardless of +x.
+        # Emit ABSOLUTE paths because the trace step cd's into the
+        # distdir before invoking and the script may not be present
+        # there (make distdir only copies Makefile.am-declared files).
         id: windows
         run: |
           set -eu
-          # Hook-first, then convention. The hook may be +x with its own
-          # shebang or a plain .sh; accept both. windows/build.bash is
-          # mode 100644 in upstream xz (never chmod'd; invoked as
-          # `bash windows/build.bash` by maintainers), so detect by
-          # existence rather than executability.
-          #
-          # Emit ABSOLUTE paths. The trace step below cd's into the
-          # distdir before invoking; user hooks at .slsa-autotools/
-          # are not in the distdir (make distdir only copies
-          # Makefile.am-declared files) so the command must reference
-          # the original checkout via ${GITHUB_WORKSPACE}.
-          if [ -x .slsa-autotools/windows-hook.sh ]; then
-            CMD="${GITHUB_WORKSPACE}/.slsa-autotools/windows-hook.sh"
-          elif [ -f .slsa-autotools/windows-hook.sh ]; then
-            CMD="bash ${GITHUB_WORKSPACE}/.slsa-autotools/windows-hook.sh"
-          elif [ -f windows/build.bash ]; then
-            CMD="bash ${GITHUB_WORKSPACE}/windows/build.bash"
-          else
-            CMD=''
-          fi
+          CMD=''
+          for candidate in windows/build.bash dist-build/msys2-win64.sh; do
+            if [ -f "$candidate" ]; then
+              CMD="bash ${GITHUB_WORKSPACE}/$candidate"
+              break
+            fi
+          done
           if [ -n "${CMD}" ]; then
             echo "detected=true" >> "$GITHUB_OUTPUT"
             echo "cmd=${CMD}"   >> "$GITHUB_OUTPUT"
@@ -535,33 +523,25 @@ jobs:
             echo "No Windows build entry point detected."
           fi
 
-      - name: Detect Linux binary build entry point
-        # Hook-only — no convention path for AppImage. Multiple AppImage
-        # builders exist (linuxdeploy, appimagetool, appimage-builder,
-        # electron-builder) and projects pick whichever fits; the hook
-        # is the project's adapter. Same shape as windows-hook.sh.
-        # When detected, the bootstrap toolchain installs the universal
-        # AppImage build deps (squashfs-tools, patchelf, desktop-file-
-        # utils) and the trace step runs the linux build so any
-        # additional apt deps the hook touches land in the emitted
-        # Dockerfile.
+      - name: Detect Linux AppImage eligibility
+        # Detection only — no hooks. AppImage builds run via a
+        # SHA-pinned linuxdeploy invocation in the build job below.
+        # An eligible project ships a top-level .desktop or
+        # .desktop.in file that linuxdeploy can resolve (any other
+        # AppImage builder is out of scope — adopters needing
+        # appimagetool / appimage-builder / linuxdeployqt scaffold
+        # those alongside slsa-autotools, not inside it).
         id: linux
         run: |
           set -eu
-          if [ -x .slsa-autotools/linux-hook.sh ]; then
-            CMD="${GITHUB_WORKSPACE}/.slsa-autotools/linux-hook.sh"
-          elif [ -f .slsa-autotools/linux-hook.sh ]; then
-            CMD="bash ${GITHUB_WORKSPACE}/.slsa-autotools/linux-hook.sh"
-          else
-            CMD=''
-          fi
-          if [ -n "${CMD}" ]; then
+          DESKTOP=$(ls -1 *.desktop *.desktop.in 2>/dev/null | head -1 || true)
+          if [ -n "${DESKTOP}" ]; then
             echo "detected=true" >> "$GITHUB_OUTPUT"
-            echo "cmd=${CMD}"   >> "$GITHUB_OUTPUT"
-            echo "Linux binary build detected: ${CMD}"
+            echo "desktop=${DESKTOP}" >> "$GITHUB_OUTPUT"
+            echo "Linux AppImage eligible: ${DESKTOP}"
           else
             echo "detected=false" >> "$GITHUB_OUTPUT"
-            echo "No Linux binary build entry point detected."
+            echo "No top-level *.desktop file; AppImage path skipped."
           fi
 
       - name: Install bootstrap toolchain
@@ -640,7 +620,8 @@ jobs:
             libicu-dev \
             libcurl4-openssl-dev \
             libxml2-dev \
-            libsqlite3-dev
+            libsqlite3-dev \
+            libncurses-dev
           # Conditional: mingw cross-toolchain + archive tooling, only
           # when a Windows build path is present. Keeps the emitted
           # Dockerfile minimal for projects that don't ship Windows
@@ -656,15 +637,13 @@ jobs:
               7zip \
               ghostscript
           fi
-          # Conditional: AppImage build deps, only when a Linux binary
-          # path is present. squashfs-tools provides mksquashfs (the
-          # AppImage payload format); patchelf is universal RPATH /
-          # interpreter rewriting used by every AppImage builder;
-          # desktop-file-utils validates the .desktop file every
-          # AppImage embeds. The specific AppImage builder
-          # (linuxdeploy, appimagetool, appimage-builder, …) is the
-          # project's choice — its linux-hook.sh downloads it by SHA
-          # at release time, mirroring how cosign is installed.
+          # Conditional: AppImage build deps, only when an eligible
+          # *.desktop / *.desktop.in file was detected. squashfs-tools
+          # provides mksquashfs (the AppImage payload format); patchelf
+          # is universal RPATH / interpreter rewriting used by linuxdeploy;
+          # desktop-file-utils validates the .desktop file. linuxdeploy
+          # itself is downloaded by SHA at release time inside the build
+          # job, mirroring how cosign is installed.
           if [ "${{ steps.linux.outputs.detected }}" = 'true' ]; then
             apt_install \
               squashfs-tools \
@@ -714,11 +693,7 @@ jobs:
           mkdir -p /tmp/scan
 
           # Bootstrap sequence. Priority:
-          #   1. Project-provided .slsa-autotools/build-hook.sh — runs
-          #      in place of the autogen/bootstrap step only; the
-          #      configure + make dist tail still runs after, matching
-          #      release.yml's "build-hook is bootstrap-only" contract.
-          #   2. ./autogen.sh or ./bootstrap if present. The || form
+          #   1. ./autogen.sh or ./bootstrap if present. The || form
           #      runs autoreconf -fi only when autogen exits non-zero
           #      — covers libpng (autogen mode=configure refuses,
           #      exits 1) and libsodium (autogen exits with getopt
@@ -733,17 +708,14 @@ jobs:
           #      either autogen runs them (exit 0 path) or autoreconf
           #      does (exit non-zero path). One side of the || always
           #      fires and feeds the strace.
-          #   3. Plain autoreconf -fi against configure.ac.
+          #   2. Plain autoreconf -fi against configure.ac.
           #
           # FORCE_UNSAFE_CONFIGURE=1: coreutils' configure refuses to
           # run as root unless this is set. Container jobs run as root
           # by default. Other projects ignore the variable, so setting
-          # it universally is zero-cost noise rather than a per-project
-          # hook.
+          # it universally is zero-cost noise.
           DIST_TAIL='FORCE_UNSAFE_CONFIGURE=1 ./configure --quiet && make -s dist GITLOG_TO_CHANGELOG=true'
-          if [ -x .slsa-autotools/build-hook.sh ]; then
-            BUILD_CMD="./.slsa-autotools/build-hook.sh && ${DIST_TAIL}"
-          elif [ -x autogen.sh ]; then
+          if [ -x autogen.sh ]; then
             BUILD_CMD="./autogen.sh || autoreconf -fi; ${DIST_TAIL}"
           elif [ -x bootstrap ]; then
             BUILD_CMD="./bootstrap || autoreconf -fi; ${DIST_TAIL}"
@@ -751,8 +723,7 @@ jobs:
             BUILD_CMD="autoreconf -fi && ${DIST_TAIL}"
           else
             echo "ERROR: no recognizable autotools bootstrap found."
-            echo "Expected one of: .slsa-autotools/build-hook.sh, autogen.sh,"
-            echo "                 bootstrap, configure.ac, configure.in"
+            echo "Expected one of: autogen.sh, bootstrap, configure.ac, configure.in"
             exit 1
           fi
           echo "Bootstrap command: ${BUILD_CMD}"
@@ -775,16 +746,26 @@ jobs:
 
           # Windows build, if detected. Traced into a separate file
           # and concatenated onto the primary log so the downstream
-          # path→package mapping picks up mingw/7zip/ghostscript
+          # path→package mapping picks up mingw / 7zip / ghostscript
           # transparently — no second codepath below.
           #
-          # Windows build scripts (xz's windows/build.bash, and any
-          # hook users write by analogy) expect to run from inside a
-          # populated distdir — the primary BUILD_CMD ran `make dist`
+          # Windows build scripts (xz's windows/build.bash, libsodium's
+          # dist-build/msys2-win64.sh) expect to run from inside a
+          # populated distdir. The primary BUILD_CMD ran `make dist`
           # which produces the tarball and removes the distdir after,
           # so regenerate a fresh distdir and chdir into it before
           # invoking the windows command. Mirrors what release.yml's
           # build_windows job does.
+          #
+          # Some Windows build scripts (xz's) require
+          # `windows/COPYING.MinGW-w64-runtime.txt` to be present in
+          # the distdir — upstream often does not vendor this file in
+          # git, expecting the maintainer to drop it in before each
+          # release. We supply it from `mingw-w64-common`'s installed
+          # copyright file at runtime so the project repo stays
+          # untouched. Idempotent — only writes if the file is
+          # missing, only runs if the build script's path implies a
+          # `windows/` subdir layout that wants it.
           WINDOWS_CMD='${{ steps.windows.outputs.cmd }}'
           if [ -n "${WINDOWS_CMD}" ]; then
             echo "Regenerating distdir for Windows trace..."
@@ -793,6 +774,13 @@ jobs:
             VERSION=$(awk -F' *= *' '$1 == "VERSION" {print $2; exit}' Makefile)
             DISTDIR="${PACKAGE}-${VERSION}"
             [ -d "${DISTDIR}" ] || { echo "ERROR: distdir ${DISTDIR} not found for windows trace"; ls -la; exit 1; }
+            if [ -d "${DISTDIR}/windows" ] \
+                && [ ! -f "${DISTDIR}/windows/COPYING.MinGW-w64-runtime.txt" ] \
+                && [ -f /usr/share/doc/mingw-w64-common/copyright ]; then
+              cp /usr/share/doc/mingw-w64-common/copyright \
+                 "${DISTDIR}/windows/COPYING.MinGW-w64-runtime.txt"
+              echo "Vendored MinGW-w64 runtime license into ${DISTDIR}/windows/."
+            fi
             echo "Tracing Windows build from ${DISTDIR}: ${WINDOWS_CMD}"
             strace -f -e trace=openat,execve -o /tmp/scan/trace-windows.log \
                    bash -c "cd '${DISTDIR}' && ${WINDOWS_CMD}" \
@@ -803,29 +791,14 @@ jobs:
             echo "Windows trace appended: $(wc -l < /tmp/scan/trace-windows.log) lines"
           fi
 
-          # Linux binary build, if detected. Same trace-and-append
-          # pattern as Windows above. The hook downloads its preferred
-          # AppImage builder by SHA at build time; squashfs-tools and
-          # patchelf were installed by the toolchain step. Whatever
-          # additional apt-installed binaries the hook touches land
-          # in the trace and pin into the emitted Dockerfile naturally.
-          LINUX_CMD='${{ steps.linux.outputs.cmd }}'
-          if [ -n "${LINUX_CMD}" ]; then
-            echo "Regenerating distdir for Linux trace..."
-            make -s distdir
-            PACKAGE=$(awk -F' *= *' '$1 == "PACKAGE" {print $2; exit}' Makefile)
-            VERSION=$(awk -F' *= *' '$1 == "VERSION" {print $2; exit}' Makefile)
-            DISTDIR="${PACKAGE}-${VERSION}"
-            [ -d "${DISTDIR}" ] || { echo "ERROR: distdir ${DISTDIR} not found for linux trace"; ls -la; exit 1; }
-            echo "Tracing Linux binary build from ${DISTDIR}: ${LINUX_CMD}"
-            strace -f -e trace=openat,execve -o /tmp/scan/trace-linux.log \
-                   bash -c "cd '${DISTDIR}' && ${LINUX_CMD}" \
-              || { echo "Linux binary build under strace FAILED."; \
-                   tail -100 /tmp/scan/trace-linux.log || true; \
-                   exit 1; }
-            cat /tmp/scan/trace-linux.log >> /tmp/scan/trace.log
-            echo "Linux trace appended: $(wc -l < /tmp/scan/trace-linux.log) lines"
-          fi
+          # AppImage build is NOT traced at scan time. linuxdeploy's
+          # apt dep surface is small and statically declared in the
+          # bootstrap-toolchain step above (squashfs-tools, patchelf,
+          # desktop-file-utils); the actual linuxdeploy invocation
+          # lives in release.yml's build_appimage_pass jobs, where
+          # it produces the real artefact. Tracing it here would
+          # require a working AppDir and icon set, which is project-
+          # specific in ways the scan job doesn't have.
 
           echo "trace_lines=$(wc -l < /tmp/scan/trace.log)" >> "$GITHUB_OUTPUT"
           echo "Trace captured: $(wc -l < /tmp/scan/trace.log) lines"

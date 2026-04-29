@@ -175,6 +175,34 @@ fi
 
 log "Builder digest: sha256:${BUILDER_DIGEST}"
 
+# ---- look up linuxdeploy version + SHA256 -----------------------
+#
+# release.yml's AppImage build pins linuxdeploy by SHA256 — same
+# model as cosign. We resolve "latest stable release" once at
+# scaffolding time and bake the version + SHA into the emitted
+# release.yml so every subsequent tag-push release uses the same
+# pinned bytes.
+#
+# Cost: ~150 MB one-time download to compute the digest. The
+# linuxdeploy AppImage is fetched into /dev/null after sha256sum
+# captures the hash. Skipping this would mean trusting whatever
+# bytes happen to be at the github releases URL on the day of
+# release, defeating the pin.
+
+log "Resolving latest linuxdeploy release..."
+LINUXDEPLOY_VERSION=$(gh api repos/linuxdeploy/linuxdeploy/releases/latest \
+  --jq '.tag_name' 2>/dev/null \
+  || curl -fsSL https://api.github.com/repos/linuxdeploy/linuxdeploy/releases/latest \
+       | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+[ -n "${LINUXDEPLOY_VERSION}" ] || die "could not resolve linuxdeploy latest tag"
+
+LINUXDEPLOY_URL="https://github.com/linuxdeploy/linuxdeploy/releases/download/${LINUXDEPLOY_VERSION}/linuxdeploy-x86_64.AppImage"
+log "Computing SHA256 of ${LINUXDEPLOY_URL} (one-time download)..."
+LINUXDEPLOY_SHA256=$(curl -fsSL "${LINUXDEPLOY_URL}" | sha256sum | awk '{print $1}')
+[ -n "${LINUXDEPLOY_SHA256}" ] && [ "${#LINUXDEPLOY_SHA256}" = "64" ] \
+  || die "could not compute linuxdeploy SHA256 (got: '${LINUXDEPLOY_SHA256}')"
+log "linuxdeploy: ${LINUXDEPLOY_VERSION} sha256:${LINUXDEPLOY_SHA256}"
+
 # ---- pick source branch -----------------------------------------
 #
 # Query the remote default branch live. The local symbolic ref
@@ -229,6 +257,8 @@ render_template() {
     -e "s|{{GENERATOR_SHA}}|${GENERATOR_SHA}|g" \
     -e "s|{{BUILDER_DIGEST}}|${BUILDER_DIGEST}|g" \
     -e "s|{{LOWERCASE_REPO}}|${LOWERCASE_REPO}|g" \
+    -e "s|{{LINUXDEPLOY_VERSION}}|${LINUXDEPLOY_VERSION}|g" \
+    -e "s|{{LINUXDEPLOY_SHA256}}|${LINUXDEPLOY_SHA256}|g" \
     "${src}" > "${dst}"
 }
 

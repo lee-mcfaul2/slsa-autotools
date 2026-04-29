@@ -113,12 +113,16 @@ jobs:
       - name: Detect Windows build entry point
         # Same precedence as scan.yml. Result is emitted as a job
         # output the build_windows_pass{1,2} jobs read via needs.test.outputs.
+        # Recognised paths (first match wins): windows/build.bash (xz),
+        # dist-build/msys2-win64.sh (libsodium).
         id: windows
         run: |
           set -eu
-          if [ -x .slsa-autotools/windows-hook.sh ] \
-              || [ -f .slsa-autotools/windows-hook.sh ] \
-              || [ -f windows/build.bash ]; then
+          HAS=false
+          for candidate in windows/build.bash dist-build/msys2-win64.sh; do
+            if [ -f "$candidate" ]; then HAS=true; break; fi
+          done
+          if [ "${HAS}" = 'true' ]; then
             echo "has_windows=true"  >> "$GITHUB_OUTPUT"
             echo "Windows build entry point detected."
           else
@@ -126,41 +130,39 @@ jobs:
             echo "No Windows build entry point detected."
           fi
 
-      - name: Detect Linux binary build entry point
-        # Hook-only — no convention path, same as scan.yml.
+      - name: Detect Linux AppImage eligibility
+        # Same precedence as scan.yml. A top-level *.desktop or
+        # *.desktop.in marks the project as linuxdeploy-eligible.
         # build_appimage_pass{1,2} read this via needs.test.outputs.
         id: linux
         run: |
           set -eu
-          if [ -x .slsa-autotools/linux-hook.sh ] \
-              || [ -f .slsa-autotools/linux-hook.sh ]; then
+          if ls -1 *.desktop *.desktop.in 2>/dev/null | head -1 | grep -q .; then
             echo "has_linux=true"  >> "$GITHUB_OUTPUT"
-            echo "Linux binary build entry point detected."
+            echo "Linux AppImage eligible (top-level .desktop[.in] present)."
           else
             echo "has_linux=false" >> "$GITHUB_OUTPUT"
-            echo "No Linux binary build entry point detected."
+            echo "No top-level *.desktop file; AppImage path skipped."
           fi
 
       - name: Bootstrap autotools
         run: |
           set -euo pipefail
-          # Bootstrap precedence: project hook > autogen.sh >
-          # bootstrap > bare autoreconf. The || form runs autoreconf
-          # only when autogen / bootstrap exited non-zero — covers
-          # libpng (autogen mode=configure refuses, exits 1) and
-          # libsodium (autogen exits with getopt usage). Running
-          # autoreconf redundantly after a successful autogen breaks
-          # the GnuPG family because automake --add-missing --copy
-          # overwrites the project's vendored po/Makefile.in.in with
-          # automake's bundled (older) version, mismatching the
-          # project's own m4 macros. The bare-configure.ac branch
-          # always autoreconfs since there's no autogen to handle
-          # the regeneration. Matches scan.yml's BUILD_CMD — both
-          # flows produce the same bootstrap output, and scan's
-          # pinned toolchain reflects what release actually runs.
-          if [ -x .slsa-autotools/build-hook.sh ]; then
-            ./.slsa-autotools/build-hook.sh
-          elif [ -x autogen.sh ]; then
+          # Bootstrap precedence: autogen.sh > bootstrap > bare
+          # autoreconf. The || form runs autoreconf only when
+          # autogen / bootstrap exited non-zero — covers libpng
+          # (autogen mode=configure refuses, exits 1) and libsodium
+          # (autogen exits with getopt usage). Running autoreconf
+          # redundantly after a successful autogen breaks the GnuPG
+          # family because automake --add-missing --copy overwrites
+          # the project's vendored po/Makefile.in.in with automake's
+          # bundled (older) version, mismatching the project's own
+          # m4 macros. The bare-configure.ac branch always autoreconfs
+          # since there's no autogen to handle regeneration. Matches
+          # scan.yml's BUILD_CMD — both flows produce the same
+          # bootstrap output, and scan's pinned toolchain reflects
+          # what release actually runs.
+          if [ -x autogen.sh ]; then
             ./autogen.sh || autoreconf -fi
           elif [ -x bootstrap ]; then
             ./bootstrap || autoreconf -fi
@@ -170,9 +172,6 @@ jobs:
           [ -x ./configure ] || { echo "ERROR: no ./configure after bootstrap"; exit 1; }
 
       - name: Configure, build, and test
-        # Projects with non-standard test invocations can override
-        # with .slsa-autotools/test-hook.sh. Default is the
-        # autotools-canonical `make check`.
         env:
           # coreutils' configure refuses to run as root unless this is
           # set. Container jobs run as root. Other projects ignore the
@@ -182,11 +181,7 @@ jobs:
           set -euo pipefail
           ./configure --quiet --enable-maintainer-mode
           make -s
-          if [ -x .slsa-autotools/test-hook.sh ]; then
-            ./.slsa-autotools/test-hook.sh
-          else
-            make -s check
-          fi
+          make -s check
 
   # Source build is split into two parallel pass jobs that each run
   # in their own container. Both passes use an identical absolute
@@ -238,7 +233,7 @@ jobs:
       - name: Bootstrap autotools
         run: |
           set -euo pipefail
-          # Bootstrap precedence: project hook > autogen.sh >
+          # Bootstrap precedence: autogen.sh >
           # bootstrap > bare autoreconf. The || form runs autoreconf
           # only when autogen / bootstrap exited non-zero — covers
           # libpng (autogen mode=configure refuses, exits 1) and
@@ -252,9 +247,7 @@ jobs:
           # the regeneration. Matches scan.yml's BUILD_CMD — both
           # flows produce the same bootstrap output, and scan's
           # pinned toolchain reflects what release actually runs.
-          if [ -x .slsa-autotools/build-hook.sh ]; then
-            ./.slsa-autotools/build-hook.sh
-          elif [ -x autogen.sh ]; then
+          if [ -x autogen.sh ]; then
             ./autogen.sh || autoreconf -fi
           elif [ -x bootstrap ]; then
             ./bootstrap || autoreconf -fi
@@ -391,7 +384,7 @@ jobs:
       - name: Bootstrap autotools
         run: |
           set -euo pipefail
-          # Bootstrap precedence: project hook > autogen.sh >
+          # Bootstrap precedence: autogen.sh >
           # bootstrap > bare autoreconf. The || form runs autoreconf
           # only when autogen / bootstrap exited non-zero — covers
           # libpng (autogen mode=configure refuses, exits 1) and
@@ -405,9 +398,7 @@ jobs:
           # the regeneration. Matches scan.yml's BUILD_CMD — both
           # flows produce the same bootstrap output, and scan's
           # pinned toolchain reflects what release actually runs.
-          if [ -x .slsa-autotools/build-hook.sh ]; then
-            ./.slsa-autotools/build-hook.sh
-          elif [ -x autogen.sh ]; then
+          if [ -x autogen.sh ]; then
             ./autogen.sh || autoreconf -fi
           elif [ -x bootstrap ]; then
             ./bootstrap || autoreconf -fi
@@ -613,22 +604,21 @@ jobs:
   # parallel pass jobs in their own containers, then verify_windows
   # does the bit-compare + attest + sign. Identical pwd between
   # passes is what makes the bit-compare hold here — libsodium's
-  # windows hook configures with --prefix="$(pwd)/libsodium-win64",
-  # which used to bake a different absolute path into libsodium.pc
-  # in each sibling build dir; with both passes at the same pwd
-  # inside their own container the leak resolves to the same
-  # bytes by construction.
+  # dist-build/msys2-win64.sh configures with
+  # --prefix="$(pwd)/libsodium-win64", which used to bake a different
+  # absolute path into libsodium.pc in each sibling build dir; with
+  # both passes at the same pwd inside their own container the leak
+  # resolves to the same bytes by construction.
   #
   # Runtime-gated via a job output from `test` rather than
   # hashFiles() — hashFiles is only valid in step-level if:, not
   # job-level. Detection happens once in the test job's
   # "Detect Windows build entry point" step and propagates here.
-  # Detection precedence (same as scan.yml):
-  #   - .slsa-autotools/windows-hook.sh   (hook, takes precedence)
-  #   - windows/build.bash                (xz convention)
-  # Consequence for repos without a Windows path: build_windows_*
-  # show as "Skipped" in the UI. Cosmetic; publish is gated so a
-  # skip doesn't block the release.
+  # Recognised entry points (first match wins): windows/build.bash
+  # (xz), dist-build/msys2-win64.sh (libsodium). Consequence for
+  # repos without a Windows path: build_windows_* show as "Skipped"
+  # in the UI. Cosmetic; publish is gated so a skip doesn't block
+  # the release.
   build_windows_pass1:
     name: Build Windows binaries (pass 1)
     needs: test
@@ -668,7 +658,7 @@ jobs:
       - name: Bootstrap autotools
         run: |
           set -euo pipefail
-          # Bootstrap precedence: project hook > autogen.sh >
+          # Bootstrap precedence: autogen.sh >
           # bootstrap > bare autoreconf. The || form runs autoreconf
           # only when autogen / bootstrap exited non-zero — covers
           # libpng (autogen mode=configure refuses, exits 1) and
@@ -682,9 +672,7 @@ jobs:
           # the regeneration. Matches scan.yml's BUILD_CMD — both
           # flows produce the same bootstrap output, and scan's
           # pinned toolchain reflects what release actually runs.
-          if [ -x .slsa-autotools/build-hook.sh ]; then
-            ./.slsa-autotools/build-hook.sh
-          elif [ -x autogen.sh ]; then
+          if [ -x autogen.sh ]; then
             ./autogen.sh || autoreconf -fi
           elif [ -x bootstrap ]; then
             ./bootstrap || autoreconf -fi
@@ -697,29 +685,28 @@ jobs:
         id: windows
         run: |
           set -eu
-          # Same precedence as scan.yml: executable hook > plain hook >
-          # windows/build.bash convention. windows/build.bash is not
-          # +x in upstream xz and never chmod'd locally.
+          # Same precedence as scan.yml: windows/build.bash > dist-build/msys2-win64.sh.
+          # windows/build.bash is mode 100644 in upstream xz (never +x),
+          # so detect by existence and invoke as `bash <path>`.
           #
           # Emit ABSOLUTE paths. The build steps below run the command
           # from inside the distdir (make distdir output), and distdir
-          # only contains files declared in Makefile.am — so a
-          # user-added .slsa-autotools/windows-hook.sh won't be present
-          # under the distdir CWD. Referencing the hook via
-          # ${GITHUB_WORKSPACE}/... resolves against the original
-          # checkout regardless of CWD. Relative invocations inside
-          # the hook (e.g. dist-build/msys2-*.sh) still resolve
-          # against distdir CWD.
-          if [ -x .slsa-autotools/windows-hook.sh ]; then
-            echo "cmd=${GITHUB_WORKSPACE}/.slsa-autotools/windows-hook.sh" >> "$GITHUB_OUTPUT"
-          elif [ -f .slsa-autotools/windows-hook.sh ]; then
-            echo "cmd=bash ${GITHUB_WORKSPACE}/.slsa-autotools/windows-hook.sh" >> "$GITHUB_OUTPUT"
-          elif [ -f windows/build.bash ]; then
-            echo "cmd=bash ${GITHUB_WORKSPACE}/windows/build.bash" >> "$GITHUB_OUTPUT"
-          else
+          # only contains files declared in Makefile.am. Some Windows
+          # build scripts (xz) live inside the distdir; some (libsodium's
+          # dist-build/msys2-win64.sh) only live in the source tree.
+          # Either way, an absolute path resolves correctly.
+          CMD=''
+          for candidate in windows/build.bash dist-build/msys2-win64.sh; do
+            if [ -f "$candidate" ]; then
+              CMD="bash ${GITHUB_WORKSPACE}/$candidate"
+              break
+            fi
+          done
+          if [ -z "${CMD}" ]; then
             echo "ERROR: Windows job reached without an entry point; needs.test.outputs.has_windows gate disagrees with detection?"
             exit 1
           fi
+          echo "cmd=${CMD}" >> "$GITHUB_OUTPUT"
 
       - name: Install reproducibility wrappers
         # Universal for any mingw-based Windows build: the build
@@ -783,15 +770,25 @@ jobs:
           find "${DISTDIR}" -type f \( -name '*.pot' -o -name '*.po' \) \
             -exec sed -i "s|^\"POT-Creation-Date: .*|\"POT-Creation-Date: ${FIXED_DATE}\\\\n\"|" {} + 2>/dev/null || true
           cd "${DISTDIR}"
+          # Some Windows build scripts (xz's windows/build.bash) require
+          # `windows/COPYING.MinGW-w64-runtime.txt` to exist in the
+          # distdir — upstream often does not vendor this file in git,
+          # expecting the maintainer to drop it in before each release.
+          # Supply it from the installed mingw-w64-common package
+          # at runtime so the project repo stays untouched.
+          if [ -d windows ] \
+              && [ ! -f windows/COPYING.MinGW-w64-runtime.txt ] \
+              && [ -f /usr/share/doc/mingw-w64-common/copyright ]; then
+            cp /usr/share/doc/mingw-w64-common/copyright \
+               windows/COPYING.MinGW-w64-runtime.txt
+            echo "Vendored MinGW-w64 runtime license into windows/."
+          fi
           # DISTDIR_TOP is what -ffile-prefix-map rewrites to "." in
           # debug paths — must be exported before the build fires.
           DISTDIR_TOP="$(pwd)"
           export DISTDIR_TOP
           bash -c "${WINDOWS_CMD}"
           # Collect whatever the build produced matching our glob.
-          # Projects with different naming conventions can supply a
-          # .slsa-autotools/windows-hook.sh that renames outputs into
-          # this shape.
           mkdir -p "${GITHUB_WORKSPACE}/win-dist"
           shopt -s nullglob
           copied=0
@@ -854,7 +851,7 @@ jobs:
       - name: Bootstrap autotools
         run: |
           set -euo pipefail
-          # Bootstrap precedence: project hook > autogen.sh >
+          # Bootstrap precedence: autogen.sh >
           # bootstrap > bare autoreconf. The || form runs autoreconf
           # only when autogen / bootstrap exited non-zero — covers
           # libpng (autogen mode=configure refuses, exits 1) and
@@ -868,9 +865,7 @@ jobs:
           # the regeneration. Matches scan.yml's BUILD_CMD — both
           # flows produce the same bootstrap output, and scan's
           # pinned toolchain reflects what release actually runs.
-          if [ -x .slsa-autotools/build-hook.sh ]; then
-            ./.slsa-autotools/build-hook.sh
-          elif [ -x autogen.sh ]; then
+          if [ -x autogen.sh ]; then
             ./autogen.sh || autoreconf -fi
           elif [ -x bootstrap ]; then
             ./bootstrap || autoreconf -fi
@@ -883,16 +878,18 @@ jobs:
         id: windows
         run: |
           set -eu
-          if [ -x .slsa-autotools/windows-hook.sh ]; then
-            echo "cmd=${GITHUB_WORKSPACE}/.slsa-autotools/windows-hook.sh" >> "$GITHUB_OUTPUT"
-          elif [ -f .slsa-autotools/windows-hook.sh ]; then
-            echo "cmd=bash ${GITHUB_WORKSPACE}/.slsa-autotools/windows-hook.sh" >> "$GITHUB_OUTPUT"
-          elif [ -f windows/build.bash ]; then
-            echo "cmd=bash ${GITHUB_WORKSPACE}/windows/build.bash" >> "$GITHUB_OUTPUT"
-          else
+          CMD=''
+          for candidate in windows/build.bash dist-build/msys2-win64.sh; do
+            if [ -f "$candidate" ]; then
+              CMD="bash ${GITHUB_WORKSPACE}/$candidate"
+              break
+            fi
+          done
+          if [ -z "${CMD}" ]; then
             echo "ERROR: Windows job reached without an entry point; needs.test.outputs.has_windows gate disagrees with detection?"
             exit 1
           fi
+          echo "cmd=${CMD}" >> "$GITHUB_OUTPUT"
 
       - name: Install reproducibility wrappers
         run: |
@@ -1032,9 +1029,7 @@ jobs:
 
       - name: Size-floor sanity check
         # Generic liar-detector for Windows artifacts. Catches empty
-        # or truncated archives before signing. A deeper
-        # entry-manifest check (project-specific) is a candidate for
-        # a later .slsa-autotools/windows-manifest.txt hook.
+        # or truncated archives before signing.
         run: |
           set -euo pipefail
           MIN_SIZE=131072   # 128 KiB floor — tune per project
@@ -1097,12 +1092,11 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # Linux binary path (AppImage). Same per-pass-container architecture
-  # as build_source / build_windows: identical absolute pwd in both
-  # passes, bit-compare in verify_appimage, no per-target DESTDIR
-  # workarounds. The path is gated on .slsa-autotools/linux-hook.sh
-  # so projects without a Linux binary entry point see these jobs as
-  # skipped.
+  # Linux binary path (AppImage via linuxdeploy). Same per-pass-container
+  # architecture as build_source / build_windows: identical absolute pwd
+  # in both passes, bit-compare in verify_appimage, no per-target
+  # workarounds. Gated on a top-level *.desktop or *.desktop.in file
+  # — projects without one see these jobs as skipped.
   #
   # Why AppImage and not bare ELF / .deb / .rpm: AppImage bundles its
   # dependencies into a single self-contained file that runs across
@@ -1112,6 +1106,12 @@ jobs:
   # toolchain. AppImage is the format that lets one build deliver to
   # the broadest audience while keeping the reproducibility surface
   # small (fixed runtime stub + SquashFS payload + ELF inside).
+  #
+  # Why linuxdeploy specifically: it ships stable tagged releases
+  # (pinnable by SHA256 from a stable URL) and doesn't enforce a host
+  # glibc ceiling on the build runner. Other AppImage builders
+  # (appimagetool, appimage-builder, linuxdeployqt) are out of scope
+  # — adopters needing them scaffold their own pipeline alongside.
   build_appimage_pass1:
     name: Build AppImage (pass 1)
     needs: test
@@ -1151,9 +1151,7 @@ jobs:
       - name: Bootstrap autotools
         run: |
           set -euo pipefail
-          if [ -x .slsa-autotools/build-hook.sh ]; then
-            ./.slsa-autotools/build-hook.sh
-          elif [ -x autogen.sh ]; then
+          if [ -x autogen.sh ]; then
             ./autogen.sh || autoreconf -fi
           elif [ -x bootstrap ]; then
             ./bootstrap || autoreconf -fi
@@ -1161,20 +1159,6 @@ jobs:
             autoreconf -fi
           fi
           [ -x ./configure ] || { echo "ERROR: no ./configure after bootstrap"; exit 1; }
-
-      - name: Detect Linux build entry point
-        id: linux
-        run: |
-          set -eu
-          # Hook-only — no convention path. Same as scan.yml.
-          if [ -x .slsa-autotools/linux-hook.sh ]; then
-            echo "cmd=${GITHUB_WORKSPACE}/.slsa-autotools/linux-hook.sh" >> "$GITHUB_OUTPUT"
-          elif [ -f .slsa-autotools/linux-hook.sh ]; then
-            echo "cmd=bash ${GITHUB_WORKSPACE}/.slsa-autotools/linux-hook.sh" >> "$GITHUB_OUTPUT"
-          else
-            echo "ERROR: Linux job reached without an entry point; needs.test.outputs.has_linux gate disagrees with detection?"
-            exit 1
-          fi
 
       - name: Install reproducibility wrapper and seed flags
         # Native gcc gets reproducibility flags via CFLAGS / CXXFLAGS /
@@ -1190,13 +1174,11 @@ jobs:
         #   - configure picks them up as user-supplied flags.
         #   - libtool stores them and passes them through cleanly.
         #   - Most autotools projects that override CFLAGS append to
-        #     the inherited value rather than replacing it; for the
-        #     few that don't, the hook can do `./configure
-        #     CFLAGS="$CFLAGS -O2"` explicitly.
+        #     the inherited value rather than replacing it.
         # The mksquashfs wrapper still uses the PATH-shadow pattern
         # because it has no env-var equivalent — it's a positional
-        # CLI tool. AppImage builders (linuxdeploy, appimagetool,
-        # appimage-builder, …) all invoke mksquashfs from PATH.
+        # CLI tool. linuxdeploy invokes mksquashfs from PATH so the
+        # wrapper takes effect transparently.
         run: |
           set -euo pipefail
           {
@@ -1242,10 +1224,9 @@ jobs:
           FORCE_UNSAFE_CONFIGURE: '1'
         run: |
           set -euo pipefail
-          LINUX_CMD='${{ steps.linux.outputs.cmd }}'
           mkdir build
           cd build
-          ../configure --quiet --enable-maintainer-mode
+          ../configure --quiet --enable-maintainer-mode --prefix=/usr
           make -s distdir GITLOG_TO_CHANGELOG=true
           PACKAGE=$(awk -F' *= *' '$1 == "PACKAGE" {print $2; exit}' Makefile)
           VERSION=$(awk -F' *= *' '$1 == "VERSION" {print $2; exit}' Makefile)
@@ -1258,19 +1239,38 @@ jobs:
           cd "${DISTDIR}"
           # CFLAGS / CXXFLAGS / LDFLAGS already carry the
           # reproducibility flags (set in the wrapper step's
-          # GITHUB_ENV writes); the hook's ./configure inherits them.
-          bash -c "${LINUX_CMD}"
-          # Collect AppImages the hook produced. Standard arch suffixes
-          # are accepted; projects targeting one arch only ship one file.
+          # GITHUB_ENV writes); ./configure inherits them.
+          ./configure --quiet --enable-maintainer-mode --prefix=/usr
+          make -s
+          make -s install DESTDIR="$(pwd)/AppDir"
+          # Pin linuxdeploy by SHA256. Substituted at scaffold time
+          # by scripts/init-release. Stable tagged release URLs (vs
+          # linuxdeployqt's perpetually-floating "continuous" tag)
+          # make this pin durable: the bytes at this URL don't change.
+          LINUXDEPLOY_VERSION='{{LINUXDEPLOY_VERSION}}'
+          LINUXDEPLOY_SHA256='{{LINUXDEPLOY_SHA256}}'
+          curl --fail --silent --show-error --location \
+            "https://github.com/linuxdeploy/linuxdeploy/releases/download/${LINUXDEPLOY_VERSION}/linuxdeploy-x86_64.AppImage" \
+            -o /opt/linuxdeploy-x86_64.AppImage
+          echo "${LINUXDEPLOY_SHA256}  /opt/linuxdeploy-x86_64.AppImage" | sha256sum -c -
+          chmod +x /opt/linuxdeploy-x86_64.AppImage
+          # APPIMAGE_EXTRACT_AND_RUN avoids needing FUSE inside the
+          # container. linuxdeploy auto-discovers the .desktop file
+          # inside AppDir/usr/share/applications/ and the icon inside
+          # AppDir/usr/share/icons/, both of which `make install`
+          # populated from the project's own install rules.
+          APPIMAGE_EXTRACT_AND_RUN=1 /opt/linuxdeploy-x86_64.AppImage \
+            --appdir AppDir \
+            --output appimage
           mkdir -p "${GITHUB_WORKSPACE}/linux-dist"
           shopt -s nullglob
           copied=0
-          for f in *-x86_64.AppImage *-aarch64.AppImage *-armhf.AppImage *-i686.AppImage; do
+          for f in *.AppImage; do
             cp "$f" "${GITHUB_WORKSPACE}/linux-dist/"
             copied=$((copied+1))
           done
           if [ "${copied}" -eq 0 ]; then
-            echo "ERROR: Linux build produced no *-{x86_64,aarch64,armhf,i686}.AppImage artifacts in $(pwd)"
+            echo "ERROR: linuxdeploy produced no AppImage in $(pwd)"
             ls -la
             exit 1
           fi
@@ -1323,9 +1323,7 @@ jobs:
       - name: Bootstrap autotools
         run: |
           set -euo pipefail
-          if [ -x .slsa-autotools/build-hook.sh ]; then
-            ./.slsa-autotools/build-hook.sh
-          elif [ -x autogen.sh ]; then
+          if [ -x autogen.sh ]; then
             ./autogen.sh || autoreconf -fi
           elif [ -x bootstrap ]; then
             ./bootstrap || autoreconf -fi
@@ -1333,19 +1331,6 @@ jobs:
             autoreconf -fi
           fi
           [ -x ./configure ] || { echo "ERROR: no ./configure after bootstrap"; exit 1; }
-
-      - name: Detect Linux build entry point
-        id: linux
-        run: |
-          set -eu
-          if [ -x .slsa-autotools/linux-hook.sh ]; then
-            echo "cmd=${GITHUB_WORKSPACE}/.slsa-autotools/linux-hook.sh" >> "$GITHUB_OUTPUT"
-          elif [ -f .slsa-autotools/linux-hook.sh ]; then
-            echo "cmd=bash ${GITHUB_WORKSPACE}/.slsa-autotools/linux-hook.sh" >> "$GITHUB_OUTPUT"
-          else
-            echo "ERROR: Linux job reached without an entry point; needs.test.outputs.has_linux gate disagrees with detection?"
-            exit 1
-          fi
 
       - name: Install reproducibility wrapper and seed flags
         # Mirror of build_appimage_pass1 — change in pairs.
@@ -1374,10 +1359,9 @@ jobs:
           FORCE_UNSAFE_CONFIGURE: '1'
         run: |
           set -euo pipefail
-          LINUX_CMD='${{ steps.linux.outputs.cmd }}'
           mkdir build
           cd build
-          ../configure --quiet --enable-maintainer-mode
+          ../configure --quiet --enable-maintainer-mode --prefix=/usr
           make -s distdir GITLOG_TO_CHANGELOG=true
           PACKAGE=$(awk -F' *= *' '$1 == "PACKAGE" {print $2; exit}' Makefile)
           VERSION=$(awk -F' *= *' '$1 == "VERSION" {print $2; exit}' Makefile)
@@ -1390,16 +1374,28 @@ jobs:
           cd "${DISTDIR}"
           DISTDIR_TOP="$(pwd)"
           export DISTDIR_TOP
-          bash -c "${LINUX_CMD}"
+          ./configure --quiet --enable-maintainer-mode --prefix=/usr
+          make -s
+          make -s install DESTDIR="$(pwd)/AppDir"
+          LINUXDEPLOY_VERSION='{{LINUXDEPLOY_VERSION}}'
+          LINUXDEPLOY_SHA256='{{LINUXDEPLOY_SHA256}}'
+          curl --fail --silent --show-error --location \
+            "https://github.com/linuxdeploy/linuxdeploy/releases/download/${LINUXDEPLOY_VERSION}/linuxdeploy-x86_64.AppImage" \
+            -o /opt/linuxdeploy-x86_64.AppImage
+          echo "${LINUXDEPLOY_SHA256}  /opt/linuxdeploy-x86_64.AppImage" | sha256sum -c -
+          chmod +x /opt/linuxdeploy-x86_64.AppImage
+          APPIMAGE_EXTRACT_AND_RUN=1 /opt/linuxdeploy-x86_64.AppImage \
+            --appdir AppDir \
+            --output appimage
           mkdir -p "${GITHUB_WORKSPACE}/linux-dist"
           shopt -s nullglob
           copied=0
-          for f in *-x86_64.AppImage *-aarch64.AppImage *-armhf.AppImage *-i686.AppImage; do
+          for f in *.AppImage; do
             cp "$f" "${GITHUB_WORKSPACE}/linux-dist/"
             copied=$((copied+1))
           done
           if [ "${copied}" -eq 0 ]; then
-            echo "ERROR: Linux build produced no *-{x86_64,aarch64,armhf,i686}.AppImage artifacts in $(pwd)"
+            echo "ERROR: linuxdeploy produced no AppImage in $(pwd)"
             ls -la
             exit 1
           fi
