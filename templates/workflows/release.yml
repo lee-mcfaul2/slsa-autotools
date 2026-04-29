@@ -269,6 +269,11 @@ jobs:
           mkdir build
           cd build
           ../configure --quiet --enable-maintainer-mode
+          # `make all` before `make distdir` builds anything declared
+          # in BUILT_SOURCES (libpng's `pnglibconf.h` etc.) so the
+          # distdir copy is complete. distdir alone does not depend
+          # on the all target.
+          make -s
           make -s distdir GITLOG_TO_CHANGELOG=true
           # Find the distdir by reading PACKAGE and VERSION from
           # the generated Makefile (automake emits these as make
@@ -420,6 +425,11 @@ jobs:
           mkdir build
           cd build
           ../configure --quiet --enable-maintainer-mode
+          # `make all` before `make distdir` builds anything declared
+          # in BUILT_SOURCES (libpng's `pnglibconf.h` etc.) so the
+          # distdir copy is complete. distdir alone does not depend
+          # on the all target.
+          make -s
           make -s distdir GITLOG_TO_CHANGELOG=true
           PACKAGE=$(awk -F' *= *' '$1 == "PACKAGE" {print $2; exit}' Makefile)
           VERSION=$(awk -F' *= *' '$1 == "VERSION" {print $2; exit}' Makefile)
@@ -760,6 +770,11 @@ jobs:
           mkdir build
           cd build
           ../configure --quiet --enable-maintainer-mode
+          # `make all` before `make distdir` builds anything declared
+          # in BUILT_SOURCES (libpng's `pnglibconf.h` etc.) so the
+          # distdir copy is complete. distdir alone does not depend
+          # on the all target.
+          make -s
           make -s distdir GITLOG_TO_CHANGELOG=true
           PACKAGE=$(awk -F' *= *' '$1 == "PACKAGE" {print $2; exit}' Makefile)
           VERSION=$(awk -F' *= *' '$1 == "VERSION" {print $2; exit}' Makefile)
@@ -932,6 +947,11 @@ jobs:
           mkdir build
           cd build
           ../configure --quiet --enable-maintainer-mode
+          # `make all` before `make distdir` builds anything declared
+          # in BUILT_SOURCES (libpng's `pnglibconf.h` etc.) so the
+          # distdir copy is complete. distdir alone does not depend
+          # on the all target.
+          make -s
           make -s distdir GITLOG_TO_CHANGELOG=true
           PACKAGE=$(awk -F' *= *' '$1 == "PACKAGE" {print $2; exit}' Makefile)
           VERSION=$(awk -F' *= *' '$1 == "VERSION" {print $2; exit}' Makefile)
@@ -1227,6 +1247,9 @@ jobs:
           mkdir build
           cd build
           ../configure --quiet --enable-maintainer-mode --prefix=/usr
+          # `make all` before `make distdir` builds BUILT_SOURCES so
+          # the distdir copy is complete (see source-pass job).
+          make -s
           make -s distdir GITLOG_TO_CHANGELOG=true
           PACKAGE=$(awk -F' *= *' '$1 == "PACKAGE" {print $2; exit}' Makefile)
           VERSION=$(awk -F' *= *' '$1 == "VERSION" {print $2; exit}' Makefile)
@@ -1362,6 +1385,9 @@ jobs:
           mkdir build
           cd build
           ../configure --quiet --enable-maintainer-mode --prefix=/usr
+          # `make all` before `make distdir` builds BUILT_SOURCES so
+          # the distdir copy is complete (see source-pass job).
+          make -s
           make -s distdir GITLOG_TO_CHANGELOG=true
           PACKAGE=$(awk -F' *= *' '$1 == "PACKAGE" {print $2; exit}' Makefile)
           VERSION=$(awk -F' *= *' '$1 == "VERSION" {print $2; exit}' Makefile)
