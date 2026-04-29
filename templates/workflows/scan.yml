@@ -723,18 +723,28 @@ jobs:
           # capture every gcc / ld / as the project actually invokes,
           # so the emitted Dockerfile pins the real compile toolchain
           # rather than just the tarball-packaging tools.
+          # Bootstrap: run autogen.sh and/or bootstrap if present
+          # (best-effort, ignore non-zero exit), then run autoreconf -fi
+          # only if `./configure` still doesn't exist.
+          #
+          # Exit-code-blind because libsodium's autogen.sh exits 0 with
+          # a "do not run arbitrary, undocumented commands" usage message
+          # without producing ./configure (it expects -s for the dev
+          # path), so the older `autogen.sh || autoreconf -fi` chain
+          # short-circuits and skips autoreconf — leaving no configure.
+          # libpng historically exited 1 in similar circumstances. Both
+          # shapes resolve to the same gate: "did the project's bootstrap
+          # leave a configure?"
+          #
+          # The configure-existence test also keeps GnuPG-family projects
+          # (whose autogen produces configure and whose vendored
+          # po/Makefile.in.in must NOT be clobbered by an autoreconf rerun)
+          # working: configure exists after autogen, autoreconf is skipped.
+          [ -f configure.ac ] || [ -f configure.in ] \
+            || { echo "ERROR: no configure.ac / configure.in"; exit 1; }
           DIST_TAIL='FORCE_UNSAFE_CONFIGURE=1 ./configure --quiet && make -s && make -s dist GITLOG_TO_CHANGELOG=true'
-          if [ -x autogen.sh ]; then
-            BUILD_CMD="./autogen.sh || autoreconf -fi; ${DIST_TAIL}"
-          elif [ -x bootstrap ]; then
-            BUILD_CMD="./bootstrap || autoreconf -fi; ${DIST_TAIL}"
-          elif [ -f configure.ac ] || [ -f configure.in ]; then
-            BUILD_CMD="autoreconf -fi && ${DIST_TAIL}"
-          else
-            echo "ERROR: no recognizable autotools bootstrap found."
-            echo "Expected one of: autogen.sh, bootstrap, configure.ac, configure.in"
-            exit 1
-          fi
+          BOOTSTRAP='[ -x autogen.sh ] && ./autogen.sh || true; [ -x bootstrap ] && ./bootstrap || true; [ -x ./configure ] || autoreconf -fi'
+          BUILD_CMD="${BOOTSTRAP}; ${DIST_TAIL}"
           echo "Bootstrap command: ${BUILD_CMD}"
 
           # Trace. -f follows forks (autotools spawns many), the

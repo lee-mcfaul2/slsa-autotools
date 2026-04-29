@@ -162,13 +162,9 @@ jobs:
           # scan.yml's BUILD_CMD — both flows produce the same
           # bootstrap output, and scan's pinned toolchain reflects
           # what release actually runs.
-          if [ -x autogen.sh ]; then
-            ./autogen.sh || autoreconf -fi
-          elif [ -x bootstrap ]; then
-            ./bootstrap || autoreconf -fi
-          elif [ -f configure.ac ] || [ -f configure.in ]; then
-            autoreconf -fi
-          fi
+          [ -x autogen.sh ] && ./autogen.sh || true
+          [ -x bootstrap  ] && ./bootstrap   || true
+          [ -x ./configure ] || autoreconf -fi
           [ -x ./configure ] || { echo "ERROR: no ./configure after bootstrap"; exit 1; }
 
       - name: Configure, build, and test
@@ -247,13 +243,9 @@ jobs:
           # the regeneration. Matches scan.yml's BUILD_CMD — both
           # flows produce the same bootstrap output, and scan's
           # pinned toolchain reflects what release actually runs.
-          if [ -x autogen.sh ]; then
-            ./autogen.sh || autoreconf -fi
-          elif [ -x bootstrap ]; then
-            ./bootstrap || autoreconf -fi
-          elif [ -f configure.ac ] || [ -f configure.in ]; then
-            autoreconf -fi
-          fi
+          [ -x autogen.sh ] && ./autogen.sh || true
+          [ -x bootstrap  ] && ./bootstrap   || true
+          [ -x ./configure ] || autoreconf -fi
           [ -x ./configure ] || { echo "ERROR: no ./configure after bootstrap"; exit 1; }
 
       - name: Build source tarball
@@ -403,13 +395,9 @@ jobs:
           # the regeneration. Matches scan.yml's BUILD_CMD — both
           # flows produce the same bootstrap output, and scan's
           # pinned toolchain reflects what release actually runs.
-          if [ -x autogen.sh ]; then
-            ./autogen.sh || autoreconf -fi
-          elif [ -x bootstrap ]; then
-            ./bootstrap || autoreconf -fi
-          elif [ -f configure.ac ] || [ -f configure.in ]; then
-            autoreconf -fi
-          fi
+          [ -x autogen.sh ] && ./autogen.sh || true
+          [ -x bootstrap  ] && ./bootstrap   || true
+          [ -x ./configure ] || autoreconf -fi
           [ -x ./configure ] || { echo "ERROR: no ./configure after bootstrap"; exit 1; }
 
       - name: Build source tarball
@@ -682,13 +670,9 @@ jobs:
           # the regeneration. Matches scan.yml's BUILD_CMD — both
           # flows produce the same bootstrap output, and scan's
           # pinned toolchain reflects what release actually runs.
-          if [ -x autogen.sh ]; then
-            ./autogen.sh || autoreconf -fi
-          elif [ -x bootstrap ]; then
-            ./bootstrap || autoreconf -fi
-          elif [ -f configure.ac ] || [ -f configure.in ]; then
-            autoreconf -fi
-          fi
+          [ -x autogen.sh ] && ./autogen.sh || true
+          [ -x bootstrap  ] && ./bootstrap   || true
+          [ -x ./configure ] || autoreconf -fi
           [ -x ./configure ] || { echo "ERROR: no ./configure after bootstrap"; exit 1; }
 
       - name: Detect Windows build entry point
@@ -880,13 +864,9 @@ jobs:
           # the regeneration. Matches scan.yml's BUILD_CMD — both
           # flows produce the same bootstrap output, and scan's
           # pinned toolchain reflects what release actually runs.
-          if [ -x autogen.sh ]; then
-            ./autogen.sh || autoreconf -fi
-          elif [ -x bootstrap ]; then
-            ./bootstrap || autoreconf -fi
-          elif [ -f configure.ac ] || [ -f configure.in ]; then
-            autoreconf -fi
-          fi
+          [ -x autogen.sh ] && ./autogen.sh || true
+          [ -x bootstrap  ] && ./bootstrap   || true
+          [ -x ./configure ] || autoreconf -fi
           [ -x ./configure ] || { echo "ERROR: no ./configure after bootstrap"; exit 1; }
 
       - name: Detect Windows build entry point
@@ -1171,13 +1151,9 @@ jobs:
       - name: Bootstrap autotools
         run: |
           set -euo pipefail
-          if [ -x autogen.sh ]; then
-            ./autogen.sh || autoreconf -fi
-          elif [ -x bootstrap ]; then
-            ./bootstrap || autoreconf -fi
-          elif [ -f configure.ac ] || [ -f configure.in ]; then
-            autoreconf -fi
-          fi
+          [ -x autogen.sh ] && ./autogen.sh || true
+          [ -x bootstrap  ] && ./bootstrap   || true
+          [ -x ./configure ] || autoreconf -fi
           [ -x ./configure ] || { echo "ERROR: no ./configure after bootstrap"; exit 1; }
 
       - name: Install reproducibility wrapper and seed flags
@@ -1346,13 +1322,9 @@ jobs:
       - name: Bootstrap autotools
         run: |
           set -euo pipefail
-          if [ -x autogen.sh ]; then
-            ./autogen.sh || autoreconf -fi
-          elif [ -x bootstrap ]; then
-            ./bootstrap || autoreconf -fi
-          elif [ -f configure.ac ] || [ -f configure.in ]; then
-            autoreconf -fi
-          fi
+          [ -x autogen.sh ] && ./autogen.sh || true
+          [ -x bootstrap  ] && ./bootstrap   || true
+          [ -x ./configure ] || autoreconf -fi
           [ -x ./configure ] || { echo "ERROR: no ./configure after bootstrap"; exit 1; }
 
       - name: Install reproducibility wrapper and seed flags
