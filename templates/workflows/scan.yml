@@ -771,24 +771,25 @@ jobs:
               pkg=$(apt-file search "/${missing}.pc" 2>/dev/null \
                     | awk -F: '/-dev:/ && !/-mingw/ && !/-cross/{print $1; exit}')
               if [ -z "$pkg" ]; then
-                cat >&2 <<EOF
-
-ERROR: ${module} requires '${missing}' (via PKG_CHECK_MODULES), but no
-       Ubuntu apt package ships /${missing}.pc on the pinned snapshot.
-
-       The Ubuntu archive does not currently package ${missing}-dev.
-       slsa-autotools is detection-only by design: the contract is
-       "we add Dockerfile and .github/workflows/* — nothing else."
-       Satisfying ${missing} would require either a project-side hook
-       (out of contract) or vendoring the dep (out of contract).
-
-       This dep is not buildable through slsa-autotools as it stands.
-       Options for the adopter:
-         - wait for ${missing}-dev to land in the Ubuntu archive
-         - remove the project's dependency on ${missing}
-         - use a different reproducible-build pipeline that permits
-           project-side hooks
-EOF
+                {
+                  echo ""
+                  echo "ERROR: ${module} requires '${missing}' (via PKG_CHECK_MODULES),"
+                  echo "       but no Ubuntu apt package ships /${missing}.pc on the"
+                  echo "       pinned snapshot."
+                  echo ""
+                  echo "       The Ubuntu archive does not currently package"
+                  echo "       ${missing}-dev. slsa-autotools is detection-only by"
+                  echo "       design: the contract is 'we add Dockerfile and"
+                  echo "       .github/workflows/* and nothing else'. Satisfying this"
+                  echo "       dep would require either a project-side hook or"
+                  echo "       vendoring the dep, both out of contract."
+                  echo ""
+                  echo "       Options for the adopter:"
+                  echo "         - wait for ${missing}-dev to land in the Ubuntu archive"
+                  echo "         - remove the project's dependency on ${missing}"
+                  echo "         - use a different reproducible-build pipeline that"
+                  echo "           permits project-side hooks"
+                } >&2
                 return 1
               fi
               echo "  → installing ${pkg}"
