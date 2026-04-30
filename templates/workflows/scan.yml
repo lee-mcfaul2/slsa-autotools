@@ -237,15 +237,34 @@ jobs:
           }
 
           declare -A RMADISON_DOWN=()
+          # Circuit-breaker: after 3 consecutive query failures, treat
+          # the rmadison endpoint as globally down for the rest of the
+          # resolve and short-circuit remaining queries (mark as
+          # satisfied everywhere). Each failed query spends ~100s in
+          # backoff retries, and projects with many PKG_CHECK_MODULES
+          # entries (ImageMagick: dozens) blow past the job's 15-min
+          # timeout under sustained outage.
+          rmadison_consec_fail=0
+          rmadison_global_down=false
           for dep in "${DEPS[@]}"; do
             pkg=$(cut -d'|' -f1 <<<"$dep")
             min_ver=$(cut -d'|' -f2 <<<"$dep")
+            if [ "$rmadison_global_down" = true ]; then
+              RMADISON_DOWN["$pkg"]=1
+              for r in "${RELEASE_ORDER[@]}"; do SATISFY["$pkg"]+=" $r"; done
+              continue
+            fi
             set +e
             rmadison_out=$(rmadison_retry "$pkg")
             rmadison_status=$?
             set -e
             RMADISON_RAW["$pkg"]="${rmadison_out}"
             if [ "$rmadison_status" = "2" ]; then
+              rmadison_consec_fail=$((rmadison_consec_fail + 1))
+              if [ "$rmadison_consec_fail" -ge 3 ]; then
+                rmadison_global_down=true
+                warn "rmadison endpoint considered globally down after 3 consecutive failures; remaining deps will be assumed satisfiable"
+              fi
               # rmadison was unreachable for every retry. Don't
               # treat that as "package missing on every release"
               # (that's how the resolver used to abort the whole
@@ -261,6 +280,10 @@ jobs:
               warn "rmadison unreachable for ${pkg} after all retries — assuming satisfied on every candidate release; trace step will validate"
               continue
             fi
+            # Successful rmadison query — reset the consecutive-failure
+            # counter so a sporadic earlier failure doesn't trip the
+            # circuit breaker after the endpoint has recovered.
+            rmadison_consec_fail=0
             while IFS= read -r line; do
               [ -z "${line// }" ] && continue
               release=$(awk -F'|' '{gsub(/ /,"",$3); print $3}' <<<"$line")
@@ -839,7 +862,15 @@ jobs:
             if ! resolve_pc_chain "$name"; then
               overall_ok=false
             fi
-          done < <(grep -E 'PKG_CHECK_MODULES' configure.ac 2>/dev/null || true)
+          done < <(grep -E '^[[:space:]]*PKG_CHECK_MODULES\(' configure.ac 2>/dev/null \
+                   | grep -v -E '^[[:space:]]*(dnl |#|AC_DEFUN)' || true)
+          # Tightened from `grep PKG_CHECK_MODULES` to require:
+          #   - the line starts (modulo whitespace) with the macro
+          #     followed by `(` — excludes wrapper macros like htop's
+          #     `AC_DEFUN([HTOP_PKG_CHECK_MODULES], ...)` and partial
+          #     identifiers
+          #   - the line is not a comment (`dnl `, `#`) or a defun
+          # The resolve job's grep is the same shape one level up.
           if [ "$overall_ok" != true ]; then
             echo "" >&2
             echo "ERROR: aborting before strace — at least one PKG_CHECK_MODULES" >&2
