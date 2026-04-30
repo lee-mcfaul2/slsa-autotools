@@ -744,41 +744,84 @@ jobs:
               if pkg-config --print-errors --exists "$module" 2>/tmp/pkgerr; then
                 return 0
               fi
+              # pkg-config emits two distinct missing-package formats:
+              #   "Package 'X', required by 'Y', not found"   → X is a
+              #     transitive Requires: of Y; the project-side
+              #     resolver missed it because configure.ac mentions Y.
+              #   "Package 'X' not found"                     → X is the
+              #     top-level module; the project-side resolver mapped
+              #     X.pc → no apt -dev package and silently dropped it.
+              # Both reduce to the same fix: apt-file map X.pc → -dev,
+              # install. Try transitive first since that pattern is
+              # strictly longer; the top-level pattern matches it too.
               local missing
               missing=$(grep -oE "Package '[^']+', required" /tmp/pkgerr 2>/dev/null \
                         | sed -E "s/Package '([^']+)', required/\1/" | head -1)
               if [ -z "$missing" ]; then
+                missing=$(grep -oE "Package '[^']+' not found" /tmp/pkgerr 2>/dev/null \
+                          | sed -E "s/Package '([^']+)' not found/\1/" | head -1)
+              fi
+              if [ -z "$missing" ]; then
+                echo "ERROR: pkg-config validation failed for ${module} but no parseable missing-package error was emitted." >&2
                 cat /tmp/pkgerr >&2
                 return 1
               fi
-              echo "  → unresolved transitive dep: ${missing}.pc"
+              echo "  → unresolved: ${missing}.pc"
               local pkg
               pkg=$(apt-file search "/${missing}.pc" 2>/dev/null \
                     | awk -F: '/-dev:/ && !/-mingw/ && !/-cross/{print $1; exit}')
               if [ -z "$pkg" ]; then
-                echo "  → no apt -dev package ships /${missing}.pc; cannot resolve" >&2
+                cat >&2 <<EOF
+
+ERROR: ${module} requires '${missing}' (via PKG_CHECK_MODULES), but no
+       Ubuntu apt package ships /${missing}.pc on the pinned snapshot.
+
+       The Ubuntu archive does not currently package ${missing}-dev.
+       slsa-autotools is detection-only by design: the contract is
+       "we add Dockerfile and .github/workflows/* — nothing else."
+       Satisfying ${missing} would require either a project-side hook
+       (out of contract) or vendoring the dep (out of contract).
+
+       This dep is not buildable through slsa-autotools as it stands.
+       Options for the adopter:
+         - wait for ${missing}-dev to land in the Ubuntu archive
+         - remove the project's dependency on ${missing}
+         - use a different reproducible-build pipeline that permits
+           project-side hooks
+EOF
                 return 1
               fi
               echo "  → installing ${pkg}"
               apt-get install -y --no-install-recommends "$pkg" 2>&1 | tail -3
             done
-            echo "  → too many iterations resolving ${module}" >&2
+            echo "ERROR: too many iterations resolving ${module}" >&2
             return 1
           }
 
-          # Iterate over PKG_CHECK_MODULES entries in configure.ac
-          # and validate each module's transitive chain. Modules the
-          # resolver couldn't map at all (and so didn't apt-install)
-          # show up here too — we'll attempt to install on the fly.
+          # Iterate over PKG_CHECK_MODULES entries in configure.ac.
+          # Hard-fail at the first unresolvable module rather than
+          # warning and falling through to the strace step — by the
+          # time `./configure` aborts there, the error is buried in
+          # the trace log and the diagnostic above is much further
+          # back. Failing here keeps "what's missing and why" the
+          # last thing in the log.
+          overall_ok=true
           while IFS= read -r line; do
             spec=$(echo "$line" | sed -E 's/.*PKG_CHECK_MODULES\([^,]+,\s*\[?([^],)]+).*/\1/')
             name=$(echo "$spec" | awk '{print $1}')
             [ -z "$name" ] && continue
             echo "Validating: $name"
             if ! resolve_pc_chain "$name"; then
-              echo "  warning: ${name} unresolved; configure may fail"
+              overall_ok=false
             fi
           done < <(grep -E 'PKG_CHECK_MODULES' configure.ac 2>/dev/null || true)
+          if [ "$overall_ok" != true ]; then
+            echo "" >&2
+            echo "ERROR: aborting before strace — at least one PKG_CHECK_MODULES" >&2
+            echo "       dependency cannot be satisfied from the Ubuntu apt" >&2
+            echo "       snapshot. See the diagnostic above." >&2
+            exit 1
+          fi
 
       - name: Run project build under strace
         id: trace
