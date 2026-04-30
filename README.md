@@ -56,7 +56,7 @@ The release workflow fires, produces the tarball, runs the two-pass byte-compare
 
 ## Scope
 
-We work with GNU Autotools projects that use `AM_INIT_AUTOMAKE` and ship a `Makefile.am`. We produce source tarballs in whichever formats the project's `make dist` recipe emits (`.tar.gz` always; `.tar.xz` and `.tar.bz2` if declared). We produce Windows binaries via `mingw-w64` cross-compile when the project ships its own cross-compile script — we recognise `windows/build.bash` and `dist-build/msys2-win64.sh` natively. We produce a Linux AppImage via `linuxdeploy` when the project ships a top-level `*.desktop` (or `*.desktop.in`) file.
+We work with GNU Autotools projects that use `AM_INIT_AUTOMAKE` and ship a `Makefile.am`. We produce source tarballs in whichever formats the project's `make dist` recipe emits (`.tar.gz` always; `.tar.xz` and `.tar.bz2` if declared). We produce Windows binaries via `mingw-w64` cross-compile when the project ships a `windows/build.bash` script (the xz convention). We produce a Linux AppImage via `linuxdeploy` when the project ships a top-level `*.desktop` (or `*.desktop.in`) file.
 
 We don't add or modify any file in your repo outside `Dockerfile` and `.github/workflows/`. Everything else is detected from what your project already ships.
 
@@ -91,7 +91,7 @@ Every artefact gets a `cosign sign-blob` signature using keyless OIDC against th
 We don't ask projects to ship slsa-autotools-shaped scripts. The pipeline detects what your project already has:
 
 - **Bootstrap**: `autogen.sh` if present (with `autoreconf -fi` as fallback for projects whose `autogen.sh` exits non-zero on bare invocation), `bootstrap` for gnulib-based projects, or bare `autoreconf -fi` against `configure.ac`.
-- **Windows**: a cross-compile script at `windows/build.bash` or `dist-build/msys2-win64.sh`. If the project's script needs `windows/COPYING.MinGW-w64-runtime.txt` and it's not in tree, we drop one in from `/usr/share/doc/mingw-w64-*/` at runtime inside the build container.
+- **Windows**: a cross-compile script at `windows/build.bash`. If the project's script needs `windows/COPYING.MinGW-w64-runtime.txt` and it's not in tree, we drop one in from `/usr/share/doc/mingw-w64-*/` at runtime inside the build container.
 - **Linux AppImage**: a top-level `*.desktop` or `*.desktop.in` file. If present, we run `make install DESTDIR=AppDir` and hand it to a SHA-pinned `linuxdeploy`. If absent, AppImage is skipped.
 
 Projects whose Windows or Linux build doesn't fit these shapes get skipped for that artefact and ship just the source tarball. They're not blockers.

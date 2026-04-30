@@ -113,13 +113,12 @@ jobs:
       - name: Detect Windows build entry point
         # Same precedence as scan.yml. Result is emitted as a job
         # output the build_windows_pass{1,2} jobs read via needs.test.outputs.
-        # Recognised paths (first match wins): windows/build.bash (xz),
-        # dist-build/msys2-win64.sh (libsodium).
+        # Recognised entry point: windows/build.bash (xz convention).
         id: windows
         run: |
           set -eu
           HAS=false
-          for candidate in windows/build.bash dist-build/msys2-win64.sh; do
+          for candidate in windows/build.bash; do
             if [ -f "$candidate" ]; then HAS=true; break; fi
           done
           if [ "${HAS}" = 'true' ]; then
@@ -609,22 +608,19 @@ jobs:
   # Windows path is split symmetrically with the source path: two
   # parallel pass jobs in their own containers, then verify_windows
   # does the bit-compare + attest + sign. Identical pwd between
-  # passes is what makes the bit-compare hold here — libsodium's
-  # dist-build/msys2-win64.sh configures with
-  # --prefix="$(pwd)/libsodium-win64", which used to bake a different
-  # absolute path into libsodium.pc in each sibling build dir; with
-  # both passes at the same pwd inside their own container the leak
-  # resolves to the same bytes by construction.
+  # passes is what makes the bit-compare hold here — projects whose
+  # Windows build path bakes `$(pwd)` into install metadata
+  # (`*.pc`, libtool `*.la`, generated headers) embed the same
+  # absolute path in both passes by construction.
   #
   # Runtime-gated via a job output from `test` rather than
   # hashFiles() — hashFiles is only valid in step-level if:, not
   # job-level. Detection happens once in the test job's
   # "Detect Windows build entry point" step and propagates here.
-  # Recognised entry points (first match wins): windows/build.bash
-  # (xz), dist-build/msys2-win64.sh (libsodium). Consequence for
-  # repos without a Windows path: build_windows_* show as "Skipped"
-  # in the UI. Cosmetic; publish is gated so a skip doesn't block
-  # the release.
+  # Recognised entry point: windows/build.bash (xz convention).
+  # Consequence for repos without it: build_windows_* show as
+  # "Skipped" in the UI. Cosmetic; publish is gated so a skip
+  # doesn't block the release.
   build_windows_pass1:
     name: Build Windows binaries (pass 1)
     needs: test
@@ -693,18 +689,15 @@ jobs:
         id: windows
         run: |
           set -eu
-          # Same precedence as scan.yml: windows/build.bash > dist-build/msys2-win64.sh.
-          # windows/build.bash is mode 100644 in upstream xz (never +x),
-          # so detect by existence and invoke as `bash <path>`.
+          # Recognised entry point: windows/build.bash (xz convention,
+          # mode 100644 in upstream — never +x — so detect by existence
+          # and invoke as `bash <path>`).
           #
           # Emit ABSOLUTE paths. The build steps below run the command
           # from inside the distdir (make distdir output), and distdir
-          # only contains files declared in Makefile.am. Some Windows
-          # build scripts (xz) live inside the distdir; some (libsodium's
-          # dist-build/msys2-win64.sh) only live in the source tree.
-          # Either way, an absolute path resolves correctly.
+          # only contains files declared in Makefile.am.
           CMD=''
-          for candidate in windows/build.bash dist-build/msys2-win64.sh; do
+          for candidate in windows/build.bash; do
             if [ -f "$candidate" ]; then
               CMD="bash ${GITHUB_WORKSPACE}/$candidate"
               break
@@ -889,7 +882,7 @@ jobs:
         run: |
           set -eu
           CMD=''
-          for candidate in windows/build.bash dist-build/msys2-win64.sh; do
+          for candidate in windows/build.bash; do
             if [ -f "$candidate" ]; then
               CMD="bash ${GITHUB_WORKSPACE}/$candidate"
               break

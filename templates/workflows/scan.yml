@@ -492,9 +492,10 @@ jobs:
       - name: Detect Windows build entry point
         # Detection only — no hooks. The project must ship its own
         # mingw cross-compile script under one of the recognised
-        # paths. Recognised paths (first match wins):
-        #   - windows/build.bash            (xz convention)
-        #   - dist-build/msys2-win64.sh     (libsodium convention)
+        # path. Recognised entry point: `windows/build.bash` (xz
+        # convention). Other shapes (e.g. `dist-build/msys2-*.sh`)
+        # often run `make check` internally, which can't pass under
+        # cross-compile on a Linux runner; out of scope.
         # When detected, the bootstrap step below installs the
         # mingw-w64 cross-toolchain + archive tooling, and the trace
         # step runs the Windows build so its apt deps land in the
@@ -508,7 +509,7 @@ jobs:
         run: |
           set -eu
           CMD=''
-          for candidate in windows/build.bash dist-build/msys2-win64.sh; do
+          for candidate in windows/build.bash; do
             if [ -f "$candidate" ]; then
               CMD="bash ${GITHUB_WORKSPACE}/$candidate"
               break
@@ -595,6 +596,7 @@ jobs:
             ca-certificates \
             curl \
             file \
+            apt-file \
             xz-utils \
             gzip \
             bzip2 \
@@ -685,6 +687,71 @@ jobs:
             sleep "${backoff}"
           done
 
+      - name: Resolve transitive pkg-config Requires
+        # The resolver in the resolve job apt-file-maps each
+        # PKG_CHECK_MODULES entry in configure.ac to its top-level
+        # `-dev` package. But that .pc file may declare its own
+        # `Requires:` chain pointing at another module whose `-dev`
+        # package isn't a Depends of the first — apt won't pull it,
+        # configure aborts.
+        #
+        # libimobiledevice's case: PKG_CHECK_MODULES(libusbmuxd-2.0)
+        # → resolver installs libusbmuxd-dev → libusbmuxd-2.0.pc
+        # contains `Requires: libimobiledevice-glue-1.0` → that .pc
+        # isn't installed → pkg-config aborts.
+        #
+        # Push the transitive walk onto pkg-config itself: ask it to
+        # validate each module; on the structured "Package 'X', required
+        # by 'Y', not found" error, apt-file map X.pc → -dev package
+        # and install it. Repeat until pkg-config returns clean or we
+        # can't resolve a missing requires.
+        run: |
+          set -euo pipefail
+          apt-file update 2>&1 | tail -1
+
+          resolve_pc_chain() {
+            local module=$1
+            local max_iter=10
+            for i in $(seq 1 "$max_iter"); do
+              if pkg-config --print-errors --exists "$module" 2>/tmp/pkgerr; then
+                return 0
+              fi
+              local missing
+              missing=$(grep -oE "Package '[^']+', required" /tmp/pkgerr 2>/dev/null \
+                        | sed -E "s/Package '([^']+)', required/\1/" | head -1)
+              if [ -z "$missing" ]; then
+                cat /tmp/pkgerr >&2
+                return 1
+              fi
+              echo "  → unresolved transitive dep: ${missing}.pc"
+              local pkg
+              pkg=$(apt-file search "/${missing}.pc" 2>/dev/null \
+                    | awk -F: '/-dev:/ && !/-mingw/ && !/-cross/{print $1; exit}')
+              if [ -z "$pkg" ]; then
+                echo "  → no apt -dev package ships /${missing}.pc; cannot resolve" >&2
+                return 1
+              fi
+              echo "  → installing ${pkg}"
+              apt-get install -y --no-install-recommends "$pkg" 2>&1 | tail -3
+            done
+            echo "  → too many iterations resolving ${module}" >&2
+            return 1
+          }
+
+          # Iterate over PKG_CHECK_MODULES entries in configure.ac
+          # and validate each module's transitive chain. Modules the
+          # resolver couldn't map at all (and so didn't apt-install)
+          # show up here too — we'll attempt to install on the fly.
+          while IFS= read -r line; do
+            spec=$(echo "$line" | sed -E 's/.*PKG_CHECK_MODULES\([^,]+,\s*\[?([^],)]+).*/\1/')
+            name=$(echo "$spec" | awk '{print $1}')
+            [ -z "$name" ] && continue
+            echo "Validating: $name"
+            if ! resolve_pc_chain "$name"; then
+              echo "  warning: ${name} unresolved; configure may fail"
+            fi
+          done < <(grep -E 'PKG_CHECK_MODULES' configure.ac 2>/dev/null || true)
+
       - name: Run project build under strace
         id: trace
         run: |
@@ -760,8 +827,7 @@ jobs:
           # path→package mapping picks up mingw / 7zip / ghostscript
           # transparently — no second codepath below.
           #
-          # Windows build scripts (xz's windows/build.bash, libsodium's
-          # dist-build/msys2-win64.sh) expect to run from inside a
+          # Windows build scripts (xz's windows/build.bash) expect to run from inside a
           # populated distdir. The primary BUILD_CMD ran `make dist`
           # which produces the tarball and removes the distdir after,
           # so regenerate a fresh distdir and chdir into it before
