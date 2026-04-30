@@ -206,6 +206,34 @@ jobs:
 
           declare -A SATISFY=()
           declare -A RMADISON_RAW=()
+
+          # rmadison hits people.canonical.com which 503/504s under
+          # load. A single transient failure here would mark the
+          # package as unresolvable on every release and abort the
+          # entire base-pick. Retry with backoff before giving up.
+          rmadison_retry() {
+            local pkg=$1
+            local out
+            for attempt in 1 2 3 4 5; do
+              out=$(rmadison -u ubuntu "$pkg" 2>&1 || true)
+              # A successful response contains pipe-separated rows
+              # like "  pkg | 1.2.3 | noble | source, all". Failures
+              # contain `curl: (22)` from rmadison's wget/curl wrapper.
+              if printf '%s\n' "$out" | grep -q '^[[:space:]]*[a-zA-Z0-9].*|.*|' \
+                 && ! printf '%s\n' "$out" | grep -q 'curl: '; then
+                printf '%s\n' "$out"
+                return 0
+              fi
+              [ "$attempt" = "5" ] && break
+              local backoff=$((10 * attempt))
+              warn "rmadison transient failure for ${pkg}; sleeping ${backoff}s before retry $((attempt + 1))/5"
+              sleep "$backoff"
+            done
+            # Final attempt result, even if degraded; downstream
+            # debug dump will still print the raw output.
+            printf '%s\n' "$out"
+          }
+
           for dep in "${DEPS[@]}"; do
             pkg=$(cut -d'|' -f1 <<<"$dep")
             min_ver=$(cut -d'|' -f2 <<<"$dep")
@@ -213,7 +241,7 @@ jobs:
             # query failures (timeouts, rate-limits, format weirdness)
             # don't silently produce empty SATISFY entries that look
             # identical to "package legitimately absent everywhere."
-            rmadison_out=$(rmadison -u ubuntu "$pkg" 2>&1 || true)
+            rmadison_out=$(rmadison_retry "$pkg")
             RMADISON_RAW["$pkg"]="${rmadison_out}"
             while IFS= read -r line; do
               [ -z "${line// }" ] && continue
