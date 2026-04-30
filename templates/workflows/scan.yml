@@ -714,36 +714,28 @@ jobs:
           # run as root unless this is set. Container jobs run as root
           # by default. Other projects ignore the variable, so setting
           # it universally is zero-cost noise.
-          # `make all` before `make dist` is the autotools-canonical
-          # release sequence. Files declared in BUILT_SOURCES (e.g.
-          # libpng's `pnglibconf.h`, generated from awk on
-          # `scripts/pnglibconf.dfa`) are produced by the all target;
-          # `make dist` alone does not depend on them and would package
-          # an incomplete tree. Adding `make` here also makes the strace
-          # capture every gcc / ld / as the project actually invokes,
-          # so the emitted Dockerfile pins the real compile toolchain
-          # rather than just the tarball-packaging tools.
-          # Bootstrap: run autogen.sh and/or bootstrap if present
-          # (best-effort, ignore non-zero exit), then run autoreconf -fi
-          # only if `./configure` still doesn't exist.
           #
-          # Exit-code-blind because libsodium's autogen.sh exits 0 with
-          # a "do not run arbitrary, undocumented commands" usage message
-          # without producing ./configure (it expects -s for the dev
-          # path), so the older `autogen.sh || autoreconf -fi` chain
-          # short-circuits and skips autoreconf — leaving no configure.
-          # libpng historically exited 1 in similar circumstances. Both
-          # shapes resolve to the same gate: "did the project's bootstrap
-          # leave a configure?"
-          #
-          # The configure-existence test also keeps GnuPG-family projects
-          # (whose autogen produces configure and whose vendored
-          # po/Makefile.in.in must NOT be clobbered by an autoreconf rerun)
-          # working: configure exists after autogen, autoreconf is skipped.
+          # Bootstrap policy:
+          #   - If the project ships an autogen.sh or bootstrap, run it
+          #     best-effort (ignore non-zero exit) and trust the result
+          #     IF it produced ./configure. That preserves GnuPG-family
+          #     invariants — autogen.sh produces configure and we must
+          #     NOT autoreconf afterwards (it would clobber vendored
+          #     po/Makefile.in.in against the project's m4/po.m4 macros).
+          #   - If autogen / bootstrap ran but produced no configure
+          #     (libsodium: autogen.sh exits 0 with usage message and
+          #     does nothing unless -s is passed; libpng-shape: autogen
+          #     exits 1), fall back to autoreconf -fi.
+          #   - If neither autogen nor bootstrap is present, ALWAYS
+          #     autoreconf -fi against configure.ac. A checked-in
+          #     configure can be stale (gnu-make's checked-in Makefile
+          #     hardcodes `aclocal-1.16` which doesn't exist on a noble
+          #     runner with automake 1.17); regenerating against the
+          #     runner's tooling is correct.
           [ -f configure.ac ] || [ -f configure.in ] \
             || { echo "ERROR: no configure.ac / configure.in"; exit 1; }
-          DIST_TAIL='FORCE_UNSAFE_CONFIGURE=1 ./configure --quiet && make -s && make -s dist GITLOG_TO_CHANGELOG=true'
-          BOOTSTRAP='[ -x autogen.sh ] && ./autogen.sh || true; [ -x bootstrap ] && ./bootstrap || true; [ -x ./configure ] || autoreconf -fi'
+          DIST_TAIL='FORCE_UNSAFE_CONFIGURE=1 ./configure --quiet && make -s dist GITLOG_TO_CHANGELOG=true'
+          BOOTSTRAP='if [ -x autogen.sh ]; then ./autogen.sh || true; [ -x ./configure ] || autoreconf -fi; elif [ -x bootstrap ]; then ./bootstrap || true; [ -x ./configure ] || autoreconf -fi; else autoreconf -fi; fi'
           BUILD_CMD="${BOOTSTRAP}; ${DIST_TAIL}"
           echo "Bootstrap command: ${BUILD_CMD}"
 
