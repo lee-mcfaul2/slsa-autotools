@@ -211,14 +211,17 @@ jobs:
           # load. A single transient failure here would mark the
           # package as unresolvable on every release and abort the
           # entire base-pick. Retry with backoff before giving up.
+          # rmadison hits people.canonical.com which 503/504s under
+          # load. A response that's a pipe-separated table is real;
+          # a response containing `curl: (22)` is the rmadison
+          # wrapper's failure mode. Returns 0 on real data, 2 when
+          # all retries failed (caller should treat as "unknown,
+          # not as "missing everywhere"), 1 on parse weirdness.
           rmadison_retry() {
             local pkg=$1
             local out
             for attempt in 1 2 3 4 5; do
               out=$(rmadison -u ubuntu "$pkg" 2>&1 || true)
-              # A successful response contains pipe-separated rows
-              # like "  pkg | 1.2.3 | noble | source, all". Failures
-              # contain `curl: (22)` from rmadison's wget/curl wrapper.
               if printf '%s\n' "$out" | grep -q '^[[:space:]]*[a-zA-Z0-9].*|.*|' \
                  && ! printf '%s\n' "$out" | grep -q 'curl: '; then
                 printf '%s\n' "$out"
@@ -229,20 +232,35 @@ jobs:
               warn "rmadison transient failure for ${pkg}; sleeping ${backoff}s before retry $((attempt + 1))/5"
               sleep "$backoff"
             done
-            # Final attempt result, even if degraded; downstream
-            # debug dump will still print the raw output.
             printf '%s\n' "$out"
+            return 2
           }
 
+          declare -A RMADISON_DOWN=()
           for dep in "${DEPS[@]}"; do
             pkg=$(cut -d'|' -f1 <<<"$dep")
             min_ver=$(cut -d'|' -f2 <<<"$dep")
-            # Capture rmadison stdout AND stderr together so transient
-            # query failures (timeouts, rate-limits, format weirdness)
-            # don't silently produce empty SATISFY entries that look
-            # identical to "package legitimately absent everywhere."
+            set +e
             rmadison_out=$(rmadison_retry "$pkg")
+            rmadison_status=$?
+            set -e
             RMADISON_RAW["$pkg"]="${rmadison_out}"
+            if [ "$rmadison_status" = "2" ]; then
+              # rmadison was unreachable for every retry. Don't
+              # treat that as "package missing on every release"
+              # (that's how the resolver used to abort the whole
+              # base-pick when QA was down). Mark the package as
+              # satisfied on every candidate release; the trace
+              # step will fail loudly later if apt actually can't
+              # provide it. Permissive on infra failure, strict on
+              # real outcome.
+              RMADISON_DOWN["$pkg"]=1
+              for r in "${RELEASE_ORDER[@]}"; do
+                SATISFY["$pkg"]+=" $r"
+              done
+              warn "rmadison unreachable for ${pkg} after all retries — assuming satisfied on every candidate release; trace step will validate"
+              continue
+            fi
             while IFS= read -r line; do
               [ -z "${line// }" ] && continue
               release=$(awk -F'|' '{gsub(/ /,"",$3); print $3}' <<<"$line")
@@ -811,6 +829,12 @@ jobs:
             spec=$(echo "$line" | sed -E 's/.*PKG_CHECK_MODULES\([^,]+,\s*\[?([^],)]+).*/\1/')
             name=$(echo "$spec" | awk '{print $1}')
             [ -z "$name" ] && continue
+            # Skip module names containing shell-variable references —
+            # they're configure-time placeholders (e.g. gnu-make's
+            # `guile-$guile_version`) that aren't real .pc names until
+            # configure runs and resolves them. The trace step will
+            # catch real failures from configure's evaluated form.
+            case "$name" in *'$'*) echo "Skipping (configure-time variable): $name"; continue ;; esac
             echo "Validating: $name"
             if ! resolve_pc_chain "$name"; then
               overall_ok=false
