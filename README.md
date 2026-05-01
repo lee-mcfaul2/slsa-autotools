@@ -98,4 +98,15 @@ Projects whose Windows or Linux build doesn't fit these shapes get skipped for t
 
 ## Status
 
-Work in progress.
+Work in progress. The scaffolder's contract — `Dockerfile` and `.github/workflows/*` written into the target repository, with no other changes to the project tree — has been exercised end-to-end against forks of the following GNU Autotools projects. In each case the `scan.yml` → builder image → `release.yml` chain ran to completion and the two-pass byte-compare succeeded.
+
+- [lee-mcfaul2/xz](https://github.com/lee-mcfaul2/xz) — `windows/build.bash` mingw cross-compile path
+- [lee-mcfaul2/libsodium](https://github.com/lee-mcfaul2/libsodium) — gnulib bootstrap, source-only
+- [lee-mcfaul2/gnu-make](https://github.com/lee-mcfaul2/gnu-make)
+- [lee-mcfaul2/htop](https://github.com/lee-mcfaul2/htop) — top-level `*.desktop` AppImage path
+- [lee-mcfaul2/ImageMagick](https://github.com/lee-mcfaul2/ImageMagick) — top-level `*.desktop` AppImage path
+- [lee-mcfaul2/libgcrypt](https://github.com/lee-mcfaul2/libgcrypt) — gnupg-family `autogen.sh`, autoreconf skipped
+- [lee-mcfaul2/libgpg-error](https://github.com/lee-mcfaul2/libgpg-error) — gnupg-family `autogen.sh`, autoreconf skipped
+- [lee-mcfaul2/libimobiledevice](https://github.com/lee-mcfaul2/libimobiledevice) — pkg-config transitive `Requires:` resolution
+
+These are test forks under a personal account. The upstream projects have not adopted this scaffolding; the existence of these forks does not imply otherwise.
